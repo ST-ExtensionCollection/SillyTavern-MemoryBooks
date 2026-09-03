@@ -51,6 +51,8 @@ import {
   DEFAULT_LOREBOOK_ENTRY_SETTINGS,
   getDefaultTitleFormats,
   getAutoHideRanges,
+  normalizeAutoHideCommands,
+  runAutoHideCustomCommands,
   identifyMemoryEntries,
   getRangeFromMemoryEntry,
   generateEntryTitleAtNumber,
@@ -600,6 +602,8 @@ const defaultSettings = {
     autoHideMode: "all",
     unhiddenEntriesCount: 2,
     ...MEMORY_REMINDER_DEFAULTS,
+    autoHideRunCommands: false,
+    autoHideCommands: [],
     autoSummaryEnabled: false,
     autoSummaryInterval: 50,
     autoSummaryTriggerMode: 'messages',
@@ -1104,6 +1108,122 @@ async function showNarratorCastManager() {
     await showNarratorCastManager();
     refreshNarratorCastDrawer();
   });
+  await popup.show();
+}
+
+async function showAutoHideCommandsManager() {
+  const moduleSettings = initializeSettings().moduleSettings;
+  const list = normalizeAutoHideCommands(moduleSettings.autoHideCommands);
+
+  const persist = (nextList) => {
+    moduleSettings.autoHideCommands = normalizeAutoHideCommands(nextList);
+    saveSettingsDebounced();
+  };
+
+  const title = translate(
+    "Auto-hide Custom Commands",
+    "STMemoryBooks_AutoHideCommandsTitle",
+  );
+  const desc = translate(
+    "Each enabled command runs after auto-hide with the message range appended, e.g. \"/presenceLockHiddenMessages 12-178\". Use {{range}} in a command to place the range somewhere other than the end.",
+    "STMemoryBooks_AutoHideCommandsDesc",
+  );
+  const addLabel = translate("Add", "STMemoryBooks_Add");
+  const emptyLabel = translate(
+    "No commands configured.",
+    "STMemoryBooks_AutoHideCommandsEmpty",
+  );
+  const placeholder = translate(
+    "/mycommand or /mycommand {{range}}",
+    "STMemoryBooks_AutoHideCommandsPlaceholder",
+  );
+
+  const rows = list
+    .map((entry, index) => {
+      const value = escapeHtml(entry.command);
+      return `<div class="stmb-narrator-manager-row" data-index="${index}">
+        <label class="checkbox_label" style="margin:0;">
+          <input type="checkbox" class="stmb-ahc-enabled" ${entry.enabled ? "checked" : ""}>
+        </label>
+        <input type="text" class="text_pole stmb-ahc-cmd" style="flex:1;" value="${value}">
+        <button type="button" class="menu_button stmb-ahc-up" ${index === 0 ? "disabled" : ""} title="${escapeHtml(translate("Move up", "STMemoryBooks_MoveUp"))}">▲</button>
+        <button type="button" class="menu_button stmb-ahc-down" ${index === list.length - 1 ? "disabled" : ""} title="${escapeHtml(translate("Move down", "STMemoryBooks_MoveDown"))}">▼</button>
+        <button type="button" class="menu_button stmb-ahc-del" title="${escapeHtml(translate("Delete", "STMemoryBooks_Delete"))}">✖</button>
+      </div>`;
+    })
+    .join("");
+
+  const content = DOMPurify.sanitize(`<h3>${escapeHtml(title)}</h3>
+    <p class="opacity50p">${escapeHtml(desc)}</p>
+    <div class="stmb-narrator-manager-add">
+      <input id="stmb-ahc-new" class="text_pole" type="text" placeholder="${escapeHtml(placeholder)}" style="flex:1;">
+      <button type="button" id="stmb-ahc-add" class="menu_button">${escapeHtml(addLabel)}</button>
+    </div>
+    <div class="stmb-narrator-manager-list">${rows || `<small class="opacity50p">${escapeHtml(emptyLabel)}</small>`}</div>`);
+
+  const popup = new Popup(content, POPUP_TYPE.TEXT, "", {
+    wide: true,
+    cancelButton: translate("Close", "STMemoryBooks_Close"),
+    okButton: false,
+  });
+  markStmbPopup(popup);
+
+  const reopen = async () => {
+    await popup.complete(POPUP_RESULT.CANCELLED);
+    await showAutoHideCommandsManager();
+  };
+
+  popup.dlg.addEventListener("change", (event) => {
+    const row = event.target.closest(".stmb-narrator-manager-row");
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (!Number.isInteger(index) || !list[index]) return;
+    if (event.target.classList.contains("stmb-ahc-enabled")) {
+      list[index].enabled = event.target.checked;
+      persist(list);
+    } else if (event.target.classList.contains("stmb-ahc-cmd")) {
+      list[index].command = String(event.target.value || "").trim();
+      persist(list);
+    }
+  });
+
+  popup.dlg.addEventListener("click", async (event) => {
+    if (event.target.closest("#stmb-ahc-add")) {
+      const input = popup.dlg.querySelector("#stmb-ahc-new");
+      const command = String(input?.value || "").trim();
+      if (!command) {
+        toastr.error(
+          translate("Enter a command.", "STMemoryBooks_AutoHideCommandsEnter"),
+          "STMemoryBooks",
+        );
+        return;
+      }
+      list.push({ command, enabled: true });
+      persist(list);
+      await reopen();
+      return;
+    }
+
+    const row = event.target.closest(".stmb-narrator-manager-row");
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (!Number.isInteger(index) || !list[index]) return;
+
+    if (event.target.closest(".stmb-ahc-del")) {
+      list.splice(index, 1);
+      persist(list);
+      await reopen();
+    } else if (event.target.closest(".stmb-ahc-up") && index > 0) {
+      [list[index - 1], list[index]] = [list[index], list[index - 1]];
+      persist(list);
+      await reopen();
+    } else if (event.target.closest(".stmb-ahc-down") && index < list.length - 1) {
+      [list[index + 1], list[index]] = [list[index], list[index + 1]];
+      persist(list);
+      await reopen();
+    }
+  });
+
   await popup.show();
 }
 
@@ -2618,6 +2738,13 @@ function validateSettings(settings) {
   ) {
     settings.moduleSettings.unhiddenEntriesCount = 2;
   }
+
+  if (typeof settings.moduleSettings.autoHideRunCommands !== "boolean") {
+    settings.moduleSettings.autoHideRunCommands = false;
+  }
+  settings.moduleSettings.autoHideCommands = normalizeAutoHideCommands(
+    settings.moduleSettings.autoHideCommands,
+  );
 
   // Validate auto-summary settings
   for (const [key, fallback] of Object.entries(MEMORY_REMINDER_DEFAULTS)) {
@@ -6196,8 +6323,10 @@ function queueDeferredQueuedAutoHideRanges(chatRef, ranges) {
 }
 
 async function runAutoHideRangesForCurrentChat(ranges) {
+  const moduleSettings = extension_settings.STMemoryBooks?.moduleSettings || {};
   for (const range of normalizeAutoHideRanges(ranges)) {
     await executeSlashCommands(`/hide ${range.start}-${range.end}`);
+    await runAutoHideCustomCommands(range.start, range.end, moduleSettings);
   }
 }
 
@@ -11024,6 +11153,10 @@ async function buildSettingsTemplateData({ includeSidePromptSets = false } = {})
     availableLorebooks: world_names ?? [],
     autoHideMode: getAutoHideMode(settings.moduleSettings),
     unhiddenEntriesCount: settings.moduleSettings.unhiddenEntriesCount ?? 2,
+    autoHideRunCommands: settings.moduleSettings.autoHideRunCommands === true,
+    autoHideCommandCount: normalizeAutoHideCommands(
+      settings.moduleSettings.autoHideCommands,
+    ).length,
     tokenWarningThreshold:
       settings.moduleSettings.tokenWarningThreshold ?? 50000,
     defaultMemoryCount: settings.moduleSettings.defaultMemoryCount ?? 0,
@@ -11325,6 +11458,24 @@ function setupSettingsEventListeners(popupInstance = currentPopupInstance) {
       return;
     }
 
+    if (e.target.closest("#stmb-manage-auto-hide-commands")) {
+      e.preventDefault();
+      await showAutoHideCommandsManager();
+      const countButton = popupElement.querySelector(
+        "#stmb-manage-auto-hide-commands",
+      );
+      if (countButton) {
+        const count = normalizeAutoHideCommands(
+          settings.moduleSettings.autoHideCommands,
+        ).length;
+        countButton.textContent =
+          "📝 " +
+          translate("Manage commands", "STMemoryBooks_ManageAutoHideCommandsLabel") +
+          ` (${count})`;
+      }
+      return;
+    }
+
     // Note: Manual lorebook and profile management buttons are now handled via customButtons
   });
 
@@ -11532,6 +11683,12 @@ function setupSettingsEventListeners(popupInstance = currentPopupInstance) {
 
     if (e.target.matches("#stmb-unhide-before-memory")) {
       settings.moduleSettings.unhideBeforeMemory = e.target.checked;
+      saveSettingsDebounced();
+      return;
+    }
+
+    if (e.target.matches("#stmb-auto-hide-run-commands")) {
+      settings.moduleSettings.autoHideRunCommands = e.target.checked;
       saveSettingsDebounced();
       return;
     }
@@ -12007,6 +12164,9 @@ function persistMainPopupSettings(popupElement) {
   const unhideBeforeMemory =
     popupElement.querySelector("#stmb-unhide-before-memory")?.checked ??
     settings.moduleSettings.unhideBeforeMemory;
+  const autoHideRunCommands =
+    popupElement.querySelector("#stmb-auto-hide-run-commands")?.checked ??
+    settings.moduleSettings.autoHideRunCommands;
   const refreshEditor =
     popupElement.querySelector("#stmb-refresh-editor")?.checked ??
     settings.moduleSettings.refreshEditor;
@@ -12146,6 +12306,11 @@ function persistMainPopupSettings(popupElement) {
 
   if (unhideBeforeMemory !== settings.moduleSettings.unhideBeforeMemory) {
     settings.moduleSettings.unhideBeforeMemory = unhideBeforeMemory;
+    hasChanges = true;
+  }
+
+  if (autoHideRunCommands !== settings.moduleSettings.autoHideRunCommands) {
+    settings.moduleSettings.autoHideRunCommands = autoHideRunCommands;
     hasChanges = true;
   }
 

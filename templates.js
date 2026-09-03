@@ -432,6 +432,17 @@ export const generalSettingsTemplate = Handlebars.compile(`
             <span data-i18n="STMemoryBooks_UnhideBeforeMemory">Unhide hidden messages for memory generation (runs /unhide X-Y)</span>
         </label>
     </div>
+
+    <div class="world_entry_form_control">
+        <label class="checkbox_label">
+            <input type="checkbox" id="stmb-auto-hide-run-commands" {{#if autoHideRunCommands}}checked{{/if}}>
+            <span data-i18n="STMemoryBooks_AutoHideRunCommands">Also run custom commands on the auto-hidden range</span>
+        </label>
+        <small class="opacity50p" data-i18n="STMemoryBooks_AutoHideRunCommandsDesc">After each auto-hide, run every enabled command below with the same range appended, e.g. /presenceLockHiddenMessages 12-178.</small>
+        <div class="flex flexFlowRow buttons_block marginTop5 justifyCenter gap10px whitespacenowrap">
+            <button id="stmb-manage-auto-hide-commands" class="menu_button whitespacenowrap">📝 Manage commands ({{autoHideCommandCount}})</button>
+        </div>
+    </div>
 `);
 
 /**

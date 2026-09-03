@@ -7,6 +7,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 ← [Back to README](readme.md)
 
+## Unreleased
+- Add opt-in "run custom commands on the auto-hidden range" for Token Saving. Each enabled command runs after every auto-hide `/hide X-Y` with the same range appended (or substituted for `{{range}}`). Manage the list (add/delete/reorder/enable) from the new popup. Useful for pairing with SillyTavern-Presence, e.g. `/presenceLockHiddenMessages`.
+
 ## v9.3.5 (October 5, 2026)
 - Fix chat icon bound status bug.
 
