@@ -1378,7 +1378,19 @@ async function generateMemoryViaTextCompletion(promptString, profile, options = 
         throw new AIResponseError('The Text Completion route returned an empty response.');
     }
 
-    const jsonResult = parseAIJsonResponse(aiResponseText);
+    try {
+        console.log('STMemoryBooks: raw Text Completion output >>>\n' + aiResponseText + '\n<<< end raw output');
+    } catch {}
+
+    let jsonResult;
+    try {
+        jsonResult = parseAIJsonResponse(aiResponseText);
+    } catch (error) {
+        if (error instanceof AIResponseError && !String(error.rawResponse || '').trim()) {
+            error.rawResponse = aiResponseText;
+        }
+        throw error;
+    }
 
     return {
         content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
