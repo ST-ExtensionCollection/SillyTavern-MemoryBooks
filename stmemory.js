@@ -1379,10 +1379,6 @@ async function generateMemoryViaTextCompletion(promptString, profile, options = 
         throw new AIResponseError('The Text Completion route returned an empty response.');
     }
 
-    try {
-        console.log('STMemoryBooks: raw Text Completion output >>>\n' + aiResponseText + '\n<<< end raw output');
-    } catch {}
-
     let jsonResult;
     try {
         jsonResult = parseAIJsonResponse(aiResponseText);
