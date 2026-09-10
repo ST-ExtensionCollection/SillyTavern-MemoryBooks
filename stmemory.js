@@ -1342,9 +1342,6 @@ async function generateMemoryViaTextCompletion(promptString, profile, options = 
         );
     }
 
-    const apiType = normalizeCompletionSource(getCurrentApiInfo().api);
-    const useStructuredOutput = shouldUseStructuredOutput(profile, apiType);
-
     // Response length: honour the STMB override if set; otherwise pass null and let
     // the active Text Completion preset's amount_gen decide.
     const stmbMaxTokens = Number.parseInt(
@@ -1362,7 +1359,11 @@ async function generateMemoryViaTextCompletion(promptString, profile, options = 
             systemPrompt: '',
             prefill: '',
             responseLength,
-            jsonSchema: useStructuredOutput ? MEMORY_RESPONSE_JSON_SCHEMA.value : null,
+            // Do NOT pass jsonSchema here. SillyTavern's generateRaw runs its own
+            // schema extraction on the reply, and a reasoning preamble + ```json
+            // fence makes it hand back an empty "{}". The preset prompt already
+            // asks for JSON; parseAIJsonResponse below does the extraction.
+            jsonSchema: null,
         });
         aiResponseText = typeof raw === 'string'
             ? raw
