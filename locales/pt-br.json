@@ -748,6 +748,8 @@
   "STMemoryBooks_CustomConnectionModelRequired": "A API Personalizada exige um ID de modelo no perfil do STMB ou no perfil de conexão selecionado do SillyTavern.",
   "STMemoryBooks_APIProfileConfigHint": "💡 Dica de Configuração do Perfil: primeiro configure e teste as conexões no SillyTavern. Perfis de API Personalizada podem usar a conexão Personalizada ativa ou ser vinculados acima a um perfil específico de conexão Personalizada. A Configuração Manual Completa deve ser usada apenas em conexões diretas excepcionais pelo navegador.",
   "STMemoryBooks_SkipStructuredOutput": "Ignorar saída estruturada e usar conclusão em texto simples",
+  "STMemoryBooks_InheritTextCompletionPreset": "Herdar as configurações de amostradores da predefinição de Text Completion do SillyTavern (DRY, penalidade de repetição, min_p, ...)",
+  "STMemoryBooks_InheritTextCompletionPresetDesc": "Envia os amostradores da predefinição de Text Completion ativa do SillyTavern em cada solicitação. Apenas back-ends que leem esses campos (koboldcpp, tabby, ooba, llama.cpp e outros servidores locais compatíveis com OpenAI) irão aplicá-los; o modelo, a temperatura e o comprimento máximo de resposta do perfil do STMB continuam tendo prioridade.",
   "STMemoryBooks_UseChatCompletionService": "Usar o ChatCompletionService do ST",
   "STMemoryBooks_UseChatCompletionServiceDesc": "Usa o perfil selecionado no gerenciador de conexões do SillyTavern, com o modelo e a temperatura do STMB. Sem um perfil de conexão selecionado, usa o auxiliar de solicitações existente. Perfis de Configuração Manual Completa não são afetados.",
   "STMemoryBooks_ChatCompletionPreset": "Predefinição de Chat Completion:",

@@ -12,6 +12,7 @@ import { getPrompt as getCustomPresetPrompt } from './summaryPromptManager.js';
 import { DISPLAY_NAME_DEFAULTS, DISPLAY_NAME_I18N_KEYS, MEMORY_TIER_CACHE_REFRESH_EVENT } from './constants.js';
 import { translate } from '../../../i18n.js';
 import { escapeHtml } from '../../../utils.js';
+import { textgenerationwebui_settings } from '../../../textgen-settings.js';
 import { tr } from './i18nHelpers.js';
 import { isNarratorModeActive } from './narratorMode.js';
 import {
@@ -1400,6 +1401,98 @@ export function formatPresetDisplayName(presetName) {
 }
 
 /**
+ * Parse SillyTavern's DRY sequence-breakers setting (a JSON string) into an array.
+ * Falls back to comma-splitting a plain string, matching ST's own behaviour.
+ * @param {string|string[]} raw
+ * @returns {string[]|undefined}
+ */
+function parseDrySequenceBreakers(raw) {
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw !== 'string' || !raw.trim()) return undefined;
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : undefined;
+    } catch {
+        return raw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+}
+
+/**
+ * Build a plain object of sampler parameters inherited from SillyTavern's active
+ * Text Completion preset (textgenerationwebui_settings). Used when a profile has
+ * `inheritTextCompletionPreset` enabled so backends that honour these fields
+ * (DRY, repetition penalty, min_p, XTC, mirostat, ...) apply them to memory
+ * generation requests.
+ *
+ * Temperature and response-length fields are deliberately excluded so the STMB
+ * profile's own settings keep priority. Only finite numeric values are emitted,
+ * plus the DRY sequence-breakers array when non-empty.
+ * @returns {Record<string, number|string[]>}
+ */
+export function buildInheritedTextCompletionSamplers() {
+    const s = textgenerationwebui_settings;
+    if (!s || typeof s !== 'object') return {};
+
+    const out = {};
+    const put = (key, value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            out[key] = value;
+        }
+    };
+
+    // DRY
+    put('dry_multiplier', s.dry_multiplier);
+    put('dry_base', s.dry_base);
+    put('dry_allowed_length', s.dry_allowed_length);
+    put('dry_penalty_last_n', s.dry_penalty_last_n);
+    const dryBreakers = parseDrySequenceBreakers(s.dry_sequence_breakers);
+    if (Array.isArray(dryBreakers) && dryBreakers.length) {
+        out.dry_sequence_breakers = dryBreakers;
+    }
+
+    // Repetition / frequency / presence (send both common field aliases)
+    put('rep_pen', s.rep_pen);
+    put('repetition_penalty', s.rep_pen);
+    put('rep_pen_range', s.rep_pen_range);
+    put('repetition_penalty_range', s.rep_pen_range);
+    put('rep_pen_slope', s.rep_pen_slope);
+    put('no_repeat_ngram_size', s.no_repeat_ngram_size);
+    put('frequency_penalty', s.freq_pen);
+    put('presence_penalty', s.presence_pen);
+
+    // Truncation samplers
+    put('min_p', s.min_p);
+    put('top_p', s.top_p);
+    put('top_k', s.top_k);
+    put('top_a', s.top_a);
+    put('typical_p', s.typical_p);
+    put('tfs', s.tfs);
+    put('epsilon_cutoff', s.epsilon_cutoff);
+    put('eta_cutoff', s.eta_cutoff);
+
+    // Smoothing
+    put('smoothing_factor', s.smoothing_factor);
+    put('smoothing_curve', s.smoothing_curve);
+
+    // XTC
+    put('xtc_threshold', s.xtc_threshold);
+    put('xtc_probability', s.xtc_probability);
+
+    // Mirostat
+    put('mirostat_mode', s.mirostat_mode);
+    put('mirostat_tau', s.mirostat_tau);
+    put('mirostat_eta', s.mirostat_eta);
+
+    // Top-nsigma (send both field aliases)
+    put('nsigma', s.nsigma);
+    put('top_n_sigma', s.nsigma);
+
+    put('min_keep', s.min_keep);
+
+    return out;
+}
+
+/**
  * Creates a clean, validated profile object from raw data.
  * This centralizes profile creation logic from all parts of the extension.
  * @param {Object} data - Raw data for the profile.
@@ -1418,6 +1511,7 @@ export function formatPresetDisplayName(presetName) {
  * @param {boolean} [data.preventRecursion=true] - The prevent recursion flag.
  * @param {boolean} [data.delayUntilRecursion=false] - The delay until recursion flag.
  * @param {boolean} [data.skipStructuredOutput=false] - Whether to skip provider structured-output requests.
+ * @param {boolean} [data.inheritTextCompletionPreset=false] - Whether to forward SillyTavern's active Text Completion sampler settings (DRY, rep pen, etc.) with requests.
  * @param {boolean} [data.useChatCompletionService=false] - Whether to use SillyTavern's ChatCompletionService for eligible requests.
  * @param {string} [data.chatCompletionPreset=''] - Optional SillyTavern chat completion preset for ChatCompletionService.processRequest.
  * @param {string} [data.connectionProfileId=''] - Optional SillyTavern Custom connection profile ID.
@@ -1460,6 +1554,8 @@ export function createProfileObject(data = {}) {
         preventRecursion: data.preventRecursion !== undefined ? data.preventRecursion : true,
         delayUntilRecursion: data.delayUntilRecursion !== undefined ? data.delayUntilRecursion : false,
         skipStructuredOutput: parseBooleanFlag(data.skipStructuredOutput, false),
+        inheritTextCompletionPreset: parseBooleanFlag(data.inheritTextCompletionPreset, false),
+        useTextCompletionApi: parseBooleanFlag(data.useTextCompletionApi, false),
     };
 
     // Preserve builtin marker for the STMB-required "Current SillyTavern Settings" profile.

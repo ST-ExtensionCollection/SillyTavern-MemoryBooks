@@ -462,6 +462,8 @@ async function saveNewProfileFromAdvancedSettings(popupElement, settings, profil
     connectionProfileId: baseProfile.connection?.connectionProfileId,
     preset: baseProfile.preset,
     titleFormat: baseProfile.titleFormat || settings.titleFormat,
+    inheritTextCompletionPreset: baseProfile.inheritTextCompletionPreset,
+    useTextCompletionApi: baseProfile.useTextCompletionApi,
   };
 
   // Step 2: If overriding, update the data with current SillyTavern settings.

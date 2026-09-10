@@ -1,7 +1,7 @@
 // Copyright (C) 2024–2026 Aiko Hanasaki
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { getEffectivePrompt, getCurrentApiInfo, normalizeCompletionSource, estimateTokens, isStmbStopError, StmbCancelledError, normalizeAdditionalContextEntries } from './utils.js';
+import { getEffectivePrompt, getCurrentApiInfo, normalizeCompletionSource, estimateTokens, isStmbStopError, StmbCancelledError, normalizeAdditionalContextEntries, buildInheritedTextCompletionSamplers } from './utils.js';
 import { characters, this_chid, substituteParams, getRequestHeaders } from '../../../../script.js';
 import { getStreamingReply, oai_settings, ZAI_ENDPOINT } from '../../../openai.js';
 import EventSourceStream from '../../../sse-stream.js';
@@ -447,6 +447,7 @@ async function sendViaChatCompletionService(body, signal, presetName = '', conne
 *@param {Object|null} [opts.jsonSchema] - Optional SillyTavern structured-output schema*
 *@param {boolean} [opts.useChatCompletionService=false] - Whether to use SillyTavern's ChatCompletionService for non-manual requests*
 *@param {string} [opts.chatCompletionPreset=''] - Optional SillyTavern chat completion preset to apply through ChatCompletionService.processRequest*
+*@param {string} [opts.customIncludeBody=''] - YAML/JSON string merged into the forwarded body for the 'custom' source (used to pass inherited Text Completion samplers such as DRY)*
 *@returns {Promise<{text: string, full: object}>}*
 */
 export async function sendRawCompletionRequest({
@@ -458,6 +459,7 @@ export async function sendRawCompletionRequest({
     apiKey = null,
     connectionProfileId = null,
     extra = {},
+    customIncludeBody = '',
     reverseProxy = false,
     signal = null,
     jsonSchema = null,
@@ -598,6 +600,12 @@ export async function sendRawCompletionRequest({
             // key instead of silently falling back to the globally active Custom key.
             body.secret_id = selectedCustomConnection.secretId || `stmb-keyless:${selectedCustomConnection.id}`;
         }
+        // Inherited Text Completion samplers ride along here: ST's custom source
+        // merges custom_include_body (YAML/JSON) into the body it forwards, which is
+        // the only way arbitrary sampler fields (DRY, rep pen, ...) reach the backend.
+        if (typeof customIncludeBody === 'string' && customIncludeBody.trim()) {
+            body.custom_include_body = customIncludeBody;
+        }
     } else if (api === 'deepseek') {
         body.custom_url = `https://api.deepseek.com/chat/completions`; // use primary Deepseek endpoint
     } else if (api === 'zai') {
@@ -671,7 +679,7 @@ export async function sendRawCompletionRequest({
 /**
  * Unified request wrapper for side prompts and memory generation.
  * Accepts normalized connection fields and forwards to sendRawCompletionRequest.
- * @param {{ api: string, model: string, prompt: string, temperature?: number, endpoint?: string, apiKey?: string, connectionProfileId?: string, extra?: object, reverseProxy?: boolean, jsonSchema?: object, useChatCompletionService?: boolean, chatCompletionPreset?: string }} opts
+ * @param {{ api: string, model: string, prompt: string, temperature?: number, endpoint?: string, apiKey?: string, connectionProfileId?: string, extra?: object, customIncludeBody?: string, reverseProxy?: boolean, jsonSchema?: object, useChatCompletionService?: boolean, chatCompletionPreset?: string }} opts
  * @returns {Promise<{ text: string, full: object }>}
  */
 export async function requestCompletion({
@@ -683,6 +691,7 @@ export async function requestCompletion({
     apiKey = null,
     connectionProfileId = null,
     extra = {},
+    customIncludeBody = '',
     reverseProxy = false,
     signal = null,
     jsonSchema = null,
@@ -700,6 +709,7 @@ export async function requestCompletion({
         apiKey,
         connectionProfileId,
         extra,
+        customIncludeBody,
         reverseProxy,
         signal,
         jsonSchema,
@@ -887,6 +897,53 @@ function normalizeText(s) {
         .replace(/[\u0000-\u001F\u200B-\u200D\u2060]/g, '');
 }
 
+/**
+ * Strip reasoning / channel noise before JSON extraction. Handles:
+ * - SillyTavern's configured reasoning template (via context.parseReasoningFromString)
+ * - generic <think>/<thinking>/<thought>/<reasoning>/<analysis> tags
+ * - OpenAI "harmony" channel markup: <|channel|>analysis<|message|>..., <|start|>,
+ *   <|end|>, and the malformed <|channel>thought<channel|> variant some instruct
+ *   templates emit on the generateRaw path.
+ * If a harmony `final` channel is present, only the text after it is kept.
+ * Ported from ../WorldTracker/src/parse.js (preclean).
+ */
+function stripReasoningNoise(input) {
+    let t = String(input);
+
+    try {
+        const parseReasoning = getContext?.()?.parseReasoningFromString;
+        if (typeof parseReasoning === 'function') {
+            const r = parseReasoning(t, { strict: false });
+            if (r && r.content) t = r.content;
+        }
+    } catch {
+        // Non-fatal: fall through to regex cleanup
+    }
+
+    const finalMarker = t.match(/<\|?channel\|?>\s*final\b[\s\S]{0,40}?<\|?message\|?>/i);
+    if (finalMarker) {
+        t = t.slice(finalMarker.index + finalMarker[0].length);
+    }
+
+    return t
+        .replace(/<\|?channel\|?>[\s\S]*?<\|?message\|?>/gi, '')
+        .replace(/<\|?(?:start|end|return|constrain|message|channel)\|?>/gi, '')
+        .replace(/<\|?channel\|?>\s*\w+/gi, '')
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/<\/?(?:think|thinking|thought|reasoning|analysis)>/gi, '')
+        .trim();
+}
+
+/** Light JSON repair: smart quotes, trailing commas, JS-style comments. */
+function repairJsonish(s) {
+    return String(s)
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/\/\/[^\n\r]*/g, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/,\s*([}\]])/g, '$1');
+}
+
 function extractFencedBlocks(s) {
     // Matches ```lang\n ... \n``` (lang optional)
     const re = /```([\w-]*)\s*([\s\S]*?)```/g;
@@ -1014,8 +1071,8 @@ export function parseAIJsonResponse(aiResponse) {
 
     cleanResponse = cleanResponse.trim();
 
-    // Remove <think> tags and their content
-    cleanResponse = cleanResponse.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Strip reasoning / harmony channel noise (<think>, <|channel|>analysis<|message|>, ...)
+    cleanResponse = stripReasoningNoise(cleanResponse);
 
     // Normalize and prepare candidates
     const normalized = normalizeText(cleanResponse);
@@ -1064,6 +1121,22 @@ export function parseAIJsonResponse(aiResponse) {
             }
         } catch {
             // ignore and try repair parse below
+        }
+
+        // Light-repair parse (smart quotes, trailing commas, comments) before dirty-json
+        try {
+            const repaired = repairJsonish(cand);
+            if (repaired !== cand) {
+                const parsedLightRepair = JSON.parse(repaired);
+                const fieldErr = validateParsed(parsedLightRepair);
+                if (fieldErr) {
+                    lastFieldError = fieldErr;
+                } else {
+                    return parsedLightRepair;
+                }
+            }
+        } catch {
+            // ignore and try dirty-json below
         }
 
         // Repair parse (dirty-json)
@@ -1173,6 +1246,90 @@ export function assertProviderDidNotTruncate(providerResponse, rawText) {
 }
 
 /**
+ * Generates memory via SillyTavern's main Text Completion pipeline (context.generateRaw)
+ * instead of the chat-completions backend.
+ *
+ * This route ignores the profile's API/model/temperature and uses whatever connection
+ * SillyTavern is currently on, together with its active instruct/context templates and
+ * Text Completion sampler preset. Local backends (koboldcpp, llama.cpp, tabby, ooba)
+ * that stop mid-sentence on the chat-completions path usually behave once "Ban EOS
+ * Token" / min-length from the active preset apply. When structured output is enabled
+ * the JSON schema is forwarded as a grammar, which also blocks an early end token.
+ *
+ * @private
+ * @param {string} promptString - The full prompt for the AI
+ * @param {Object} profile - The user-selected profile
+ * @param {{signal?: AbortSignal|null}} [options]
+ * @returns {Promise<{content: string, title: string, keywords: string[], profile: Object}>}
+ * @throws {AIResponseError} If generation fails or doesn't return valid JSON
+ */
+async function generateMemoryViaTextCompletion(promptString, profile, options = {}) {
+    const signal = options?.signal || null;
+
+    const characterDataReady = await waitForCharacterData({ signal });
+    if (!characterDataReady) {
+        if (signal?.aborted) {
+            throw new StmbCancelledError();
+        }
+        throw new AIResponseError(
+            'Character data is not available. This may indicate that SillyTavern is still loading. Please wait a moment and try again.'
+        );
+    }
+
+    const ctx = typeof getContext === 'function' ? getContext() : null;
+    if (typeof ctx?.generateRaw !== 'function') {
+        throw new AIResponseError(
+            'The Text Completion route needs a newer SillyTavern build: context.generateRaw is unavailable.'
+        );
+    }
+
+    const apiType = normalizeCompletionSource(getCurrentApiInfo().api);
+    const useStructuredOutput = shouldUseStructuredOutput(profile, apiType);
+
+    // Response length: honour the STMB override if set; otherwise pass null and let
+    // the active Text Completion preset's amount_gen decide.
+    const stmbMaxTokens = Number.parseInt(
+        extension_settings?.STMemoryBooks?.moduleSettings?.maxTokens,
+        10,
+    );
+    const responseLength = Number.isFinite(stmbMaxTokens) && stmbMaxTokens > 0
+        ? stmbMaxTokens
+        : null;
+
+    let aiResponseText;
+    try {
+        const raw = await ctx.generateRaw({
+            prompt: promptString,
+            systemPrompt: '',
+            prefill: '',
+            responseLength,
+            jsonSchema: useStructuredOutput ? MEMORY_RESPONSE_JSON_SCHEMA.value : null,
+        });
+        aiResponseText = typeof raw === 'string'
+            ? raw
+            : String(raw?.text ?? raw?.content ?? '');
+    } catch (error) {
+        if (isStmbStopError(error)) {
+            throw error;
+        }
+        throw new AIResponseError(`Text Completion generation failed: ${error?.message || error}`);
+    }
+
+    if (!aiResponseText.trim()) {
+        throw new AIResponseError('The Text Completion route returned an empty response.');
+    }
+
+    const jsonResult = parseAIJsonResponse(aiResponseText);
+
+    return {
+        content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
+        title: jsonResult.title || 'Memory',
+        keywords: Array.isArray(jsonResult.keywords) ? jsonResult.keywords : [],
+        profile: profile,
+    };
+}
+
+/**
  * Generates memory using AI with structured JSON output instead of tool calling.
  * @private
  * @param {string} promptString - The full prompt for the AI
@@ -1181,6 +1338,10 @@ export function assertProviderDidNotTruncate(providerResponse, rawText) {
  * @throws {AIResponseError} If the AI generation fails or doesn't return valid JSON
  */
 async function generateMemoryWithAI(promptString, profile, options = {}) {
+    if (profile?.useTextCompletionApi === true) {
+        return await generateMemoryViaTextCompletion(promptString, profile, options);
+    }
+
     const signal = options?.signal || null;
     const characterDataReady = await waitForCharacterData({ signal });
     if (!characterDataReady) {
@@ -1207,6 +1368,30 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
             extra.max_tokens = oai_settings.openai_max_tokens;
         }
 
+        // Forward SillyTavern's active Text Completion sampler settings (DRY, rep pen,
+        // min_p, ...) when the profile opts in.
+        let customIncludeBody = '';
+        if (profile?.inheritTextCompletionPreset) {
+            const inheritedSamplers = buildInheritedTextCompletionSamplers();
+            if (Object.keys(inheritedSamplers).length > 0) {
+                if (apiType === 'custom') {
+                    // ST's server allowlists top-level request keys for the "custom"
+                    // source, so loose sampler fields are stripped before they reach
+                    // the backend. custom_include_body (a YAML/JSON string) is the
+                    // only channel that survives: ST merges it into the forwarded body.
+                    customIncludeBody = JSON.stringify(inheritedSamplers);
+                } else {
+                    // full-manual hits the endpoint directly; other sources ignore
+                    // unknown fields. Existing keys win so max tokens are never lost.
+                    for (const [key, value] of Object.entries(inheritedSamplers)) {
+                        if (extra[key] === undefined) {
+                            extra[key] = value;
+                        }
+                    }
+                }
+            }
+        }
+
         const useStructuredOutput = shouldUseStructuredOutput(profile, apiType);
         const requestOptions = {
             model: conn.model,
@@ -1217,6 +1402,7 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
             apiKey: conn.apiKey,
             connectionProfileId: conn.connectionProfileId,
             extra: extra,
+            customIncludeBody,
             reverseProxy: !!conn.reverseProxy,
             signal,
             jsonSchema: useStructuredOutput ? MEMORY_RESPONSE_JSON_SCHEMA : null,

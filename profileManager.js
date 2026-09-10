@@ -169,6 +169,18 @@ const profileEditTemplate = Handlebars.compile(`
             <span data-i18n="STMemoryBooks_SkipStructuredOutput">Skip structured output and use plain-text completion</span>
         </label>
 
+        <label class="checkbox_label marginTop5">
+            <input type="checkbox" id="stmb-profile-inherit-text-completion-preset" {{#if inheritTextCompletionPreset}}checked{{/if}}>
+            <span data-i18n="STMemoryBooks_InheritTextCompletionPreset">Inherit SillyTavern Text Completion sampler settings (DRY, rep pen, min_p, ...)</span>
+        </label>
+        <small class="opacity50p" data-i18n="STMemoryBooks_InheritTextCompletionPresetDesc">Sends the samplers from SillyTavern's active Text Completion preset with each request. Only backends that read these fields (koboldcpp, tabby, ooba, llama.cpp, and other OpenAI-compatible local servers) will apply them; the STMB profile's model, temperature, and max response length still take priority.</small>
+
+        <label class="checkbox_label marginTop5">
+            <input type="checkbox" id="stmb-profile-use-text-completion-api" {{#if useTextCompletionApi}}checked{{/if}}>
+            <span data-i18n="STMemoryBooks_UseTextCompletionApi">Generate via SillyTavern's Text Completion API (generateRaw)</span>
+        </label>
+        <small class="opacity50p" data-i18n="STMemoryBooks_UseTextCompletionApiDesc">Routes memory generation through SillyTavern's main text-completion pipeline instead of the chat-completions backend, applying the active instruct/context templates and the Text Completion sampler preset (Ban EOS Token, min length, DRY). Use this if a local model (koboldcpp, llama.cpp, ooba, tabby) keeps stopping mid-sentence. SillyTavern's currently active connection and preset are used - this profile's API, model, and temperature are ignored. The STMB max response length override still applies if set.</small>
+
         <div id="stmb-profile-chat-completion-service-container" class="{{#if (eq connection.api 'full-manual')}}displayNone{{/if}}">
             <label class="checkbox_label marginTop5">
                 <input type="checkbox" id="stmb-profile-use-chat-completion-service" {{#if useChatCompletionService}}checked{{/if}}>
@@ -434,6 +446,8 @@ export async function editProfile(settings, profileIndex, refreshCallback) {
             preventRecursion: profile.preventRecursion,
             delayUntilRecursion: profile.delayUntilRecursion,
             skipStructuredOutput: Boolean(profile.skipStructuredOutput),
+            inheritTextCompletionPreset: Boolean(profile.inheritTextCompletionPreset),
+            useTextCompletionApi: Boolean(profile.useTextCompletionApi),
             useChatCompletionService: Boolean(profile.useChatCompletionService) && connection.api !== 'full-manual',
             chatCompletionPresetOptions: getChatCompletionPresetOptions(profile.chatCompletionPreset || ''),
             customConnectionProfileOptions: getCustomConnectionProfileOptions(connection.connectionProfileId),
@@ -548,6 +562,8 @@ export async function newProfile(settings, refreshCallback) {
             preventRecursion: false,
             delayUntilRecursion: false,
             skipStructuredOutput: false,
+            inheritTextCompletionPreset: false,
+            useTextCompletionApi: false,
             useChatCompletionService: false,
             chatCompletionPresetOptions: getChatCompletionPresetOptions(''),
             customConnectionProfileOptions: getCustomConnectionProfileOptions(''),
@@ -1297,6 +1313,8 @@ function buildProfileFromForm(popupElement, fallbackName, existingProfile = {}) 
         preventRecursion: popupElement.querySelector('#stmb-profile-prevent-recursion')?.checked,
         delayUntilRecursion: popupElement.querySelector('#stmb-profile-delay-recursion')?.checked,
         skipStructuredOutput: popupElement.querySelector('#stmb-profile-skip-structured-output')?.checked,
+        inheritTextCompletionPreset: popupElement.querySelector('#stmb-profile-inherit-text-completion-preset')?.checked,
+        useTextCompletionApi: popupElement.querySelector('#stmb-profile-use-text-completion-api')?.checked,
         useGroupSpecificPrompts: popupElement.querySelector('#stmb-profile-use-group-specific-prompts')?.checked,
         groupPreset: popupElement.querySelector('#stmb-profile-group-preset')?.value || 'group',
         characterPreset: popupElement.querySelector('#stmb-profile-character-preset')?.value || 'char',
@@ -1491,6 +1509,18 @@ export function validateAndFixProfiles(settings) {
             fixes.push(`Added default 'skipStructuredOutput' to profile "${profile.name}"`);
         } else {
             profile.skipStructuredOutput = parseBooleanFlag(profile.skipStructuredOutput, false);
+        }
+        if (profile.inheritTextCompletionPreset === undefined) {
+            profile.inheritTextCompletionPreset = false;
+            fixes.push(`Added default 'inheritTextCompletionPreset' to profile "${profile.name}"`);
+        } else {
+            profile.inheritTextCompletionPreset = parseBooleanFlag(profile.inheritTextCompletionPreset, false);
+        }
+        if (profile.useTextCompletionApi === undefined) {
+            profile.useTextCompletionApi = false;
+            fixes.push(`Added default 'useTextCompletionApi' to profile "${profile.name}"`);
+        } else {
+            profile.useTextCompletionApi = parseBooleanFlag(profile.useTextCompletionApi, false);
         }
         if (profile.connection?.api === 'full-manual') {
             if ('useChatCompletionService' in profile) {
