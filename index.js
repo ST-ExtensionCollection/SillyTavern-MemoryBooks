@@ -14585,7 +14585,7 @@ async function init() {
     return a === b;
   });
 
-  console.log("STMemoryBooks: Extension loaded successfully [build parser-fallback 4e8aeaf]");
+  console.log("STMemoryBooks: Extension loaded successfully [build no-schema 630aeb7]");
 }
 
 /**
