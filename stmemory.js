@@ -910,11 +910,19 @@ function normalizeText(s) {
 function stripReasoningNoise(input) {
     let t = String(input);
 
+    // SillyTavern's configured reasoning template. Use strict mode so it only
+    // fires when a real prefix+suffix pair is present, and only accept the result
+    // when it actually removed a reasoning block and left JSON-looking content -
+    // a loose parse here has been observed to swallow the real answer.
     try {
         const parseReasoning = getContext?.()?.parseReasoningFromString;
         if (typeof parseReasoning === 'function') {
-            const r = parseReasoning(t, { strict: false });
-            if (r && r.content) t = r.content;
+            const r = parseReasoning(t, { strict: true });
+            if (r && typeof r.content === 'string' && r.content.trim()
+                && typeof r.reasoning === 'string' && r.reasoning.trim()
+                && /[{[]/.test(r.content)) {
+                t = r.content;
+            }
         }
     } catch {
         // Non-fatal: fall through to regex cleanup
@@ -925,22 +933,32 @@ function stripReasoningNoise(input) {
         t = t.slice(finalMarker.index + finalMarker[0].length);
     }
 
-    return t
+    t = t
         .replace(/<\|?channel\|?>[\s\S]*?<\|?message\|?>/gi, '')
         .replace(/<\|?(?:start|end|return|constrain|message|channel)\|?>/gi, '')
         .replace(/<\|?channel\|?>\s*\w+/gi, '')
         .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
         .replace(/<\/?(?:think|thinking|thought|reasoning|analysis)>/gi, '')
         .trim();
+
+    // If a fenced code block survived, it is the payload - return only its inner
+    // text so any leftover prose ("thought", stray channel words) or trailing
+    // markers can't confuse JSON extraction.
+    const fence = t.match(/```(?:json[l5]?|jsonc)?[ \t]*\r?\n?([\s\S]*?)```/i);
+    if (fence && /[{[]/.test(fence[1] || '')) {
+        return fence[1].trim();
+    }
+
+    return t;
 }
 
-/** Light JSON repair: smart quotes, trailing commas, JS-style comments. */
+/** Light JSON repair: smart quotes and trailing commas only (never touch `//`,
+ *  which appears in ordinary prose and, once newlines are normalized away, would
+ *  eat the rest of the string). */
 function repairJsonish(s) {
     return String(s)
         .replace(/[“”]/g, '"')
         .replace(/[‘’]/g, "'")
-        .replace(/\/\/[^\n\r]*/g, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/,\s*([}\]])/g, '$1');
 }
 
@@ -1150,6 +1168,47 @@ export function parseAIJsonResponse(aiResponse) {
             }
         } catch {
             // continue trying other candidates
+        }
+    }
+
+    // Last-ditch: pull the fields straight out of the text with regex. Survives
+    // broken structure between properties, stray reasoning tokens, an unescaped
+    // quote somewhere else in the blob, etc. - as long as the "content" and
+    // "title" string values themselves are individually well-formed.
+    {
+        const grabString = (key) => {
+            const m = normalized.match(
+                new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'i'),
+            );
+            return m ? m[1] : null;
+        };
+        const unescapeJson = (s) => {
+            try {
+                return JSON.parse(`"${s}"`);
+            } catch {
+                return String(s)
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\t/g, '\t')
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, '\\');
+            }
+        };
+        const rawContent = grabString('content') || grabString('summary') || grabString('memory_content');
+        const rawTitle = grabString('title');
+        if (rawContent && rawTitle) {
+            let keywords = [];
+            const kwBlock = normalized.match(/"keywords"\s*:\s*\[([\s\S]*?)\]/i);
+            if (kwBlock) {
+                keywords = (kwBlock[1].match(/"((?:[^"\\]|\\.)*)"/g) || [])
+                    .map((s) => unescapeJson(s.slice(1, -1)).trim())
+                    .filter(Boolean);
+            }
+            console.debug('STMemoryBooks: recovered memory fields via regex fallback (structured JSON parse failed).');
+            return {
+                title: unescapeJson(rawTitle),
+                content: unescapeJson(rawContent),
+                keywords,
+            };
         }
     }
 
