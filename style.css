@@ -249,6 +249,14 @@
     gap: 8px;
 }
 
+.stmb-ahc-row {
+    grid-template-columns: auto minmax(160px, 1fr) auto;
+}
+
+.stmb-ahc-add-row {
+    grid-template-columns: minmax(160px, 1fr) auto;
+}
+
 .stmb-narrator-manager-list {
     display: flex;
     flex-direction: column;

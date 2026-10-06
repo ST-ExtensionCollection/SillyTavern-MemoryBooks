@@ -598,6 +598,15 @@ export const localeData_en = {
     'STMemoryBooks_AutoHideNone': 'Do not auto-hide',
     'STMemoryBooks_AutoHideAll': 'Auto-hide all messages up to the last memory',
     'STMemoryBooks_AutoHideLast': 'Auto-hide only messages in the last memory',
+    'STMemoryBooks_AutoHideRunCommands': 'Also run custom commands on the auto-hidden range',
+    'STMemoryBooks_AutoHideRunCommandsDesc': 'After each auto-hide, run every enabled command below with the same range appended, e.g. /presenceLockHiddenMessages 12-178.',
+    'STMemoryBooks_ManageAutoHideCommandsLabel': 'Manage commands',
+    'STMemoryBooks_AutoHideCommandsTitle': 'Auto-hide Custom Commands',
+    'STMemoryBooks_AutoHideCommandsDesc': 'Each enabled command runs after auto-hide with the message range appended, e.g. "/presenceLockHiddenMessages 12-178". Use {{range}} in a command to place the range somewhere other than the end.',
+    'STMemoryBooks_AutoHideCommandsEmpty': 'No commands configured.',
+    'STMemoryBooks_AutoHideCommandsPlaceholder': '/mycommand or /mycommand {{range}}',
+    'STMemoryBooks_AutoHideCommandsEnter': 'Enter a command.',
+    'STMemoryBooks_Add': 'Add',
 
     // Unhidden Count
     'STMemoryBooks_UnhiddenCount': 'Messages to leave unhidden:',

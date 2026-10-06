@@ -576,7 +576,19 @@ Hidden messages remain in the chat file. They are omitted from active chat conte
 
 **Unhide hidden messages for memory generation** reveals a selected range before STMB compiles it. Use this when regenerating or reprocessing ranges that were previously hidden. The selected auto-hide mode determines what is hidden again after a successful save.
 
-### 9.4 Memory-boundary indicator
+### 9.4 Custom commands on the auto-hidden range
+
+**Also run custom commands on the auto-hidden range** is off by default. When enabled, every time auto-hide runs `/hide X-Y` after a successful save, STMB also runs each enabled command from **Manage commands** for that same range.
+
+- By default the range is appended to the end of the command: `/presenceLockHiddenMessages` runs as `/presenceLockHiddenMessages 12-178`.
+- If a command contains `{{range}}`, the range replaces that token instead of being appended, for example `/mycommand range={{range}}`.
+- Commands run in list order, after the `/hide` for each range. Use the arrows to reorder, the checkbox to disable a command without deleting it, and ✖ to delete it.
+- A command that fails is logged in the browser console and skipped; it does not stop the remaining commands or the Memory save.
+- Nothing runs when the auto-hide mode is **Do not auto-hide**, because no range is hidden.
+
+The main use is keeping STMB's hidden messages hidden while another extension also manages message visibility. See [Presence](#232-presence).
+
+### 9.5 Memory-boundary indicator
 
 The indicator uses the highest processed message to show where processed history ends and unprocessed chat begins.
 
@@ -589,7 +601,7 @@ Modes:
 
 The jump button scrolls toward the first unprocessed message and remembers its dragged position.
 
-### 9.5 Good learning configuration
+### 9.6 Good learning configuration
 
 A practical initial setup is:
 
@@ -1908,9 +1920,11 @@ STMB's **Token Saving** settings can hide processed messages after a Memory is s
 
 The Presence extension and STMB can both change the hidden or visible state of chat messages. If Presence reveals messages that STMB hid, STMB's Token Saving setting has not been erased or ignored; a later action by Presence has changed the same SillyTavern message state.
 
-If you use Presence and want messages hidden by STMB to remain hidden, use Presence's own hidden-message locking feature. Presence currently provides the `/presenceLockHiddenMessages` command for this purpose. Run it for the applicable message range and repeat it as that range grows. Consult Presence's documentation for current command behavior.
+If you use Presence and want messages hidden by STMB to remain hidden, use Presence's own hidden-message locking feature. Presence currently provides the `/presenceLockHiddenMessages` command for this purpose. Consult Presence's documentation for current command behavior.
 
-STMB does not automatically configure or invoke Presence, and its group-chat participant handling is unrelated to Token Saving.
+To lock each range as STMB hides it, enable **Also run custom commands on the auto-hidden range** and add `/presenceLockHiddenMessages` under **Manage commands** (see [Custom commands on the auto-hidden range](#94-custom-commands-on-the-auto-hidden-range)). STMB then runs it with the same range after every auto-hide. Without that setting, run the command yourself for the applicable range and repeat it as the range grows.
+
+STMB does not configure Presence or invoke it unless the user adds a Presence command to that list, and its group-chat participant handling is unrelated to Token Saving.
 
 ### 23.3 Regex integration
 

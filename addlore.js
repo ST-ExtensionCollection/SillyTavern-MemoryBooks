@@ -124,6 +124,77 @@ async function safeExecuteHideCommand(hideCommand, context = '') {
     }
 }
 
+const AUTOHIDE_RANGE_TOKEN = '{{range}}';
+
+/**
+ * Normalize the custom auto-hide command list into a consistent shape.
+ * Accepts an array of strings or { command, enabled } objects.
+ * @param {any} list
+ * @returns {{command: string, enabled: boolean}[]}
+ */
+export function normalizeAutoHideCommands(list) {
+    if (!Array.isArray(list)) return [];
+    const normalized = [];
+    for (const item of list) {
+        let command = '';
+        let enabled = true;
+        if (typeof item === 'string') {
+            command = item;
+        } else if (item && typeof item === 'object') {
+            command = typeof item.command === 'string' ? item.command : '';
+            enabled = item.enabled !== false;
+        }
+        command = command.trim();
+        if (!command) continue;
+        normalized.push({ command, enabled });
+    }
+    return normalized;
+}
+
+/**
+ * Get the enabled custom auto-hide commands, or [] when the feature toggle is off.
+ * @param {object} moduleSettings
+ * @returns {string[]} command strings without the range
+ */
+export function getEnabledAutoHideCommands(moduleSettings = {}) {
+    if (!moduleSettings.autoHideRunCommands) return [];
+    return normalizeAutoHideCommands(moduleSettings.autoHideCommands)
+        .filter(entry => entry.enabled)
+        .map(entry => entry.command);
+}
+
+/**
+ * Build a runnable slash command for a range. If the command contains the
+ * "{{range}}" token it is substituted; otherwise " start-end" is appended.
+ * @private
+ */
+function buildRangedAutoHideCommand(command, start, end) {
+    const range = `${start}-${end}`;
+    if (command.includes(AUTOHIDE_RANGE_TOKEN)) {
+        return command.split(AUTOHIDE_RANGE_TOKEN).join(range);
+    }
+    return `${command} ${range}`;
+}
+
+/**
+ * Run each enabled custom auto-hide command against the given range.
+ * Failures are logged and swallowed so one bad command cannot abort the rest.
+ * @param {number} start
+ * @param {number} end
+ * @param {object} moduleSettings
+ */
+export async function runAutoHideCustomCommands(start, end, moduleSettings = {}) {
+    for (const command of getEnabledAutoHideCommands(moduleSettings)) {
+        const fullCommand = buildRangedAutoHideCommand(command, start, end);
+        try {
+            console.log(i18n('addlore.log.executingHideCommand', `${MODULE_NAME}: Executing hide command: {{hideCommand}}`, { hideCommand: fullCommand }));
+            await executeSlashCommands(fullCommand);
+        } catch (e) {
+            console.warn(i18n('addlore.warn.autohideFailed', `${MODULE_NAME}: Auto-hide failed:`), e);
+        }
+    }
+}
+
 /**
  * Helper function to convert old boolean auto-hide settings to new dropdown format
  */
@@ -641,6 +712,7 @@ export async function addMemoryToLorebook(memoryResult, lorebookValidation, opti
                         `/hide ${range.start}-${range.end}`,
                         i18n(range.contextKey, range.contextFallback),
                     );
+                    await runAutoHideCustomCommands(range.start, range.end, settings.moduleSettings);
                 }
             }
         }
