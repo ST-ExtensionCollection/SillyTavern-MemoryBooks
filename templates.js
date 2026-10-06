@@ -247,6 +247,24 @@ export const generalSettingsTemplate = Handlebars.compile(`
             <input type="checkbox" id="stmb-show-memory-previews" {{#if showMemoryPreviews}}checked{{/if}}>
             <span data-i18n="STMemoryBooks_ShowMemoryPreviews;[title]STMemoryBooks_ShowMemoryPreviewsTooltip" title="Shows previews for memories and side prompts returned from the AI.">Show memory previews</span>
         </label>
+        <label for="stmb-preview-recovered-memories">
+            <h4 data-i18n="STMemoryBooks_PreviewRecoveredMemories">Preview recovered memories</h4>
+            <small class="opacity50p" data-i18n="STMemoryBooks_PreviewRecoveredMemoriesDesc">Show the memory preview when the AI's JSON had to be recovered or repaired, even with memory previews off. /stmb-catchup shows a warning instead.</small>
+            <select id="stmb-preview-recovered-memories" class="text_pole">
+                {{#each previewRecoveredMemoriesOptions}}
+                    <option value="{{value}}" {{#if isSelected}}selected{{/if}}>{{label}}</option>
+                {{/each}}
+            </select>
+        </label>
+        <label for="stmb-json-line-breaks">
+            <h4 data-i18n="STMemoryBooks_JsonLineBreaks">Line breaks in AI JSON</h4>
+            <small class="opacity50p" data-i18n="STMemoryBooks_JsonLineBreaksDesc">How to handle raw line breaks in the AI's memory JSON. Detect keeps paragraphs inside the memory; the legacy option removes them and can glue words together.</small>
+            <select id="stmb-json-line-breaks" class="text_pole">
+                {{#each jsonLineBreakModeOptions}}
+                    <option value="{{value}}" {{#if isSelected}}selected{{/if}}>{{label}}</option>
+                {{/each}}
+            </select>
+        </label>
         <label class="checkbox_label">
             <input type="checkbox" id="stmb-show-consolidation-previews" {{#if showConsolidationPreviews}}checked{{/if}}>
             <span data-i18n="STMemoryBooks_ShowConsolidationPreviews;[title]STMemoryBooks_ShowConsolidationPreviewsTooltip" title="Shows previews for consolidation summaries returned from the AI.">Show consolidation previews</span>
@@ -661,6 +679,12 @@ export const memoryPreviewTemplate = Handlebars.compile(`
     <div class="world_entry_form_control">
         <small class="marginBot10" data-i18n="STMemoryBooks_MemoryPreviewDesc">Review the generated memory below. You can edit the content while preserving the structure.</small>
     </div>
+    {{#if recoveredNotice}}
+    <div class="info-block warning marginBot10" data-i18n="STMemoryBooks_MemoryPreviewRecoveredNotice">The AI's JSON was malformed, so this memory was recovered from it. Check the title, content, and keywords before saving.</div>
+    {{/if}}
+    {{#if hasRawResponse}}
+    <div class="marginBot10"><a href="#" id="stmb-preview-raw-link" data-i18n="STMemoryBooks_MemoryPreviewRawLink">View or fix the original response</a></div>
+    {{/if}}
 
     <div class="world_entry_form_control">
         <label for="stmb-preview-title">

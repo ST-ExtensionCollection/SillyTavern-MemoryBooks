@@ -46,6 +46,7 @@ import {
   getSceneStats,
 } from "./chatcompile.js";
 import { createMemory, parseAIJsonResponse } from "./stmemory.js";
+import { memoryKeywordsRequired, usableKeywords } from "./aiResponseCleanup.js";
 import {
   addMemoryToLorebook,
   DEFAULT_LOREBOOK_ENTRY_SETTINGS,
@@ -256,6 +257,7 @@ import {
   hasActiveStmbJobs,
   initStmbJobsIfTopInfoBarEnabled,
   registerStmbJobExecutor,
+  loadLatestLorebookForJob,
   subscribeToStmbJobs,
   updateHighestMemoryProcessedForChatRef,
   withStmbWriteLane,
@@ -573,6 +575,20 @@ const MEMORY_BOUNDARY_MODES = Object.freeze({
 });
 const MEMORY_BOUNDARY_MODE_VALUES = new Set(Object.values(MEMORY_BOUNDARY_MODES));
 const DEFAULT_MEMORY_BOUNDARY_MODE = MEMORY_BOUNDARY_MODES.BOTH;
+const RECOVERED_MEMORY_PREVIEW_MODES = Object.freeze({
+  OFF: "off",
+  RECOVERED: "recovered",
+  REPAIRED: "repaired",
+});
+const RECOVERED_MEMORY_PREVIEW_MODE_VALUES = new Set(Object.values(RECOVERED_MEMORY_PREVIEW_MODES));
+const DEFAULT_RECOVERED_MEMORY_PREVIEW_MODE = RECOVERED_MEMORY_PREVIEW_MODES.RECOVERED;
+const JSON_LINE_BREAK_MODES = Object.freeze({
+  OFF: "off",
+  SPACE: "space",
+  DETECT: "detect",
+});
+const JSON_LINE_BREAK_MODE_VALUES = new Set(Object.values(JSON_LINE_BREAK_MODES));
+const DEFAULT_JSON_LINE_BREAK_MODE = JSON_LINE_BREAK_MODES.DETECT;
 const MEMORY_BOUNDARY_BUTTON_SIZE = 36;
 const MEMORY_BOUNDARY_BUTTON_MARGIN = 12;
 const MEMORY_BOUNDARY_BUTTON_DEFAULT_BOTTOM = 112;
@@ -582,6 +598,8 @@ const defaultSettings = {
   moduleSettings: {
     alwaysUseDefault: true,
     showMemoryPreviews: false,
+    previewRecoveredMemories: DEFAULT_RECOVERED_MEMORY_PREVIEW_MODE,
+    jsonLineBreakMode: DEFAULT_JSON_LINE_BREAK_MODE,
     showConsolidationPreviews: false,
     showNotifications: true,
     showFloatingClipButton: true,
@@ -741,6 +759,8 @@ const memoryRollbackDeletionTracker = createMessageDeletionTracker();
 const memoryRollbackChains = new Map();
 const childMemoryRollbackInFlight = new Set();
 let lorebookRegenerationRefreshTimer = null;
+// True while /stmb-catchup runs, so recovered memories warn instead of opening a preview
+let stmbCatchupActive = false;
 
 function normalizeMemoryBoundaryMode(mode) {
   const value = String(mode ?? DEFAULT_MEMORY_BOUNDARY_MODE);
@@ -781,6 +801,86 @@ function getMemoryBoundaryModeOptions(selectedMode) {
       isSelected: selected === MEMORY_BOUNDARY_MODES.BOTH,
     },
   ];
+}
+
+function normalizeRecoveredMemoryPreviewMode(mode) {
+  const value = String(mode ?? DEFAULT_RECOVERED_MEMORY_PREVIEW_MODE);
+  return RECOVERED_MEMORY_PREVIEW_MODE_VALUES.has(value) ? value : DEFAULT_RECOVERED_MEMORY_PREVIEW_MODE;
+}
+
+function getRecoveredMemoryPreviewModeOptions(selectedMode) {
+  const selected = normalizeRecoveredMemoryPreviewMode(selectedMode);
+  return [
+    {
+      value: RECOVERED_MEMORY_PREVIEW_MODES.OFF,
+      label: translate("Off", "STMemoryBooks_PreviewRecoveredMemoriesOff"),
+      isSelected: selected === RECOVERED_MEMORY_PREVIEW_MODES.OFF,
+    },
+    {
+      value: RECOVERED_MEMORY_PREVIEW_MODES.RECOVERED,
+      label: translate("Recovered from broken JSON", "STMemoryBooks_PreviewRecoveredMemoriesRecovered"),
+      isSelected: selected === RECOVERED_MEMORY_PREVIEW_MODES.RECOVERED,
+    },
+    {
+      value: RECOVERED_MEMORY_PREVIEW_MODES.REPAIRED,
+      label: translate("Recovered or repaired JSON", "STMemoryBooks_PreviewRecoveredMemoriesRepaired"),
+      isSelected: selected === RECOVERED_MEMORY_PREVIEW_MODES.REPAIRED,
+    },
+  ];
+}
+
+function normalizeJsonLineBreakMode(mode) {
+  const value = String(mode ?? DEFAULT_JSON_LINE_BREAK_MODE);
+  return JSON_LINE_BREAK_MODE_VALUES.has(value) ? value : DEFAULT_JSON_LINE_BREAK_MODE;
+}
+
+function getJsonLineBreakModeOptions(selectedMode) {
+  const selected = normalizeJsonLineBreakMode(selectedMode);
+  return [
+    {
+      value: JSON_LINE_BREAK_MODES.OFF,
+      label: translate("Remove (legacy)", "STMemoryBooks_JsonLineBreaksOff"),
+      isSelected: selected === JSON_LINE_BREAK_MODES.OFF,
+    },
+    {
+      value: JSON_LINE_BREAK_MODES.SPACE,
+      label: translate("Replace with spaces", "STMemoryBooks_JsonLineBreaksSpace"),
+      isSelected: selected === JSON_LINE_BREAK_MODES.SPACE,
+    },
+    {
+      value: JSON_LINE_BREAK_MODES.DETECT,
+      label: translate("Keep as line breaks (detect)", "STMemoryBooks_JsonLineBreaksDetect"),
+      isSelected: selected === JSON_LINE_BREAK_MODES.DETECT,
+    },
+  ];
+}
+
+/**
+ * Whether a generated memory must be previewed because its JSON needed help,
+ * per the "Preview recovered memories" setting. metadata.parseLevel comes from
+ * createMemory: 'recovered' (regex field recovery), 'repaired' (dirty-json) or
+ * 'strict'.
+ */
+function needsRecoveredMemoryReview(settings, memoryResult) {
+  const mode = normalizeRecoveredMemoryPreviewMode(settings?.moduleSettings?.previewRecoveredMemories);
+  const level = memoryResult?.metadata?.parseLevel;
+  if (level === "recovered") return mode !== RECOVERED_MEMORY_PREVIEW_MODES.OFF;
+  if (level === "repaired") return mode === RECOVERED_MEMORY_PREVIEW_MODES.REPAIRED;
+  return false;
+}
+
+// Warn when a memory recovered from broken JSON is saved without a preview.
+function warnRecoveredMemory(memoryResult) {
+  if (memoryResult?.metadata?.parseLevel !== "recovered") return;
+  toastr.warning(
+    tr(
+      "STMemoryBooks_RecoveredMemoryWarning",
+      "Memory \"{{title}}\" was recovered from malformed AI output. Check its title, content, and keywords in the lorebook.",
+      { title: memoryResult.extractedTitle || translate("Memory", "addlore.defaults.title") },
+    ),
+    "STMemoryBooks",
+    { timeOut: 15000 },
+  );
 }
 
 function getMemoryBoundaryTargetId() {
@@ -1971,24 +2071,29 @@ async function handleStmbCatchupCommand(namedArgs) {
       translate("STMemoryBooks", "index.toast.title"),
     );
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      toastr.info(
-        __st_t_tag`Creating catch-up memory ${i + 1}/${chunks.length}: messages ${chunk.start}-${chunk.end}`,
-        translate("STMemoryBooks", "index.toast.title"),
-      );
-
-      const success = await runSceneMemoryRange(chunk.start, chunk.end, {
-        showSceneToast: false,
-      });
-
-      if (!success) {
-        toastr.error(
-          __st_t_tag`STMB catch-up stopped at messages ${chunk.start}-${chunk.end}.`,
+    stmbCatchupActive = true;
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        toastr.info(
+          __st_t_tag`Creating catch-up memory ${i + 1}/${chunks.length}: messages ${chunk.start}-${chunk.end}`,
           translate("STMemoryBooks", "index.toast.title"),
         );
-        return "";
+
+        const success = await runSceneMemoryRange(chunk.start, chunk.end, {
+          showSceneToast: false,
+        });
+
+        if (!success) {
+          toastr.error(
+            __st_t_tag`STMB catch-up stopped at messages ${chunk.start}-${chunk.end}.`,
+            translate("STMemoryBooks", "index.toast.title"),
+          );
+          return "";
+        }
       }
+    } finally {
+      stmbCatchupActive = false;
     }
 
     toastr.success(
@@ -2654,6 +2759,12 @@ function validateSettings(settings) {
   settings.moduleSettings.clipReviewAlwaysAfterMemory = false;
   settings.moduleSettings.memoryBoundaryMode = normalizeMemoryBoundaryMode(
     settings.moduleSettings.memoryBoundaryMode,
+  );
+  settings.moduleSettings.previewRecoveredMemories = normalizeRecoveredMemoryPreviewMode(
+    settings.moduleSettings.previewRecoveredMemories,
+  );
+  settings.moduleSettings.jsonLineBreakMode = normalizeJsonLineBreakMode(
+    settings.moduleSettings.jsonLineBreakMode,
   );
   if (
     settings.moduleSettings.memoryBoundaryButtonPosition !== null &&
@@ -4059,6 +4170,7 @@ async function generateCharacterFocusedManualGroupMemories({
       tokenWarningThreshold: tokenThreshold,
       signal,
     });
+    warnRecoveredMemory(characterMemory);
     if (applyNativeCharacterFilters) {
       ensureGroupMemoryParticipantFilters(characterMemory, { characterFilterNames: [speakerName] });
     }
@@ -5605,8 +5717,14 @@ async function executeMemoryGeneration(
 
     // Check if memory previews are enabled and handle accordingly
     let finalMemoryResult = memoryResult;
+    const showPreview =
+      settings.moduleSettings.showMemoryPreviews ||
+      (!stmbCatchupActive && needsRecoveredMemoryReview(settings, memoryResult));
+    if (!showPreview) {
+      warnRecoveredMemory(memoryResult);
+    }
 
-    if (settings.moduleSettings.showMemoryPreviews) {
+    if (showPreview) {
       // Clear working toast before showing preview popup
       toastr.clear();
 
@@ -6138,6 +6256,7 @@ async function buildQueuedMemoryJob(
       memoryBooksContext: deepClone(memoryBooksContext),
       sceneMarkers: deepClone(originSnapshot.sceneMarkers),
       manualGroupLorebookBindings,
+      nonInteractive: stmbCatchupActive,
     },
   };
 }
@@ -6368,7 +6487,13 @@ async function executeQueuedMemoryJob(job, jobContext) {
   jobContext.throwIfCancelled();
 
   let finalMemoryResult = memoryResult;
-  if (settings.moduleSettings?.showMemoryPreviews) {
+  const showPreview =
+    settings.moduleSettings?.showMemoryPreviews ||
+    (!payload.nonInteractive && needsRecoveredMemoryReview(settings, memoryResult));
+  if (!showPreview) {
+    warnRecoveredMemory(memoryResult);
+  }
+  if (showPreview) {
     const approval = await awaitStmbJobApproval(
       jobContext,
       {
@@ -11001,6 +11126,10 @@ async function buildSettingsTemplateData({ includeSidePromptSets = false } = {})
     autoRollbackRestorePreviousSidePrompts:
       settings.moduleSettings.autoRollbackRestorePreviousSidePrompts !== false,
     showMemoryPreviews: settings.moduleSettings.showMemoryPreviews,
+    previewRecoveredMemoriesOptions: getRecoveredMemoryPreviewModeOptions(
+      settings.moduleSettings.previewRecoveredMemories,
+    ),
+    jsonLineBreakModeOptions: getJsonLineBreakModeOptions(settings.moduleSettings.jsonLineBreakMode),
     showConsolidationPreviews: settings.moduleSettings.showConsolidationPreviews,
     showNotifications: settings.moduleSettings.showNotifications,
     showFloatingClipButton: settings.moduleSettings.showFloatingClipButton !== false,
@@ -11435,6 +11564,18 @@ function setupSettingsEventListeners(popupInstance = currentPopupInstance) {
       settings.moduleSettings.showFloatingClipButton = e.target.checked;
       saveSettingsDebounced();
       refreshFloatingClipButtonSetting();
+      return;
+    }
+
+    if (e.target.matches("#stmb-json-line-breaks")) {
+      settings.moduleSettings.jsonLineBreakMode = normalizeJsonLineBreakMode(e.target.value);
+      saveSettingsDebounced();
+      return;
+    }
+
+    if (e.target.matches("#stmb-preview-recovered-memories")) {
+      settings.moduleSettings.previewRecoveredMemories = normalizeRecoveredMemoryPreviewMode(e.target.value);
+      saveSettingsDebounced();
       return;
     }
 
@@ -12004,6 +12145,14 @@ function persistMainPopupSettings(popupElement) {
     popupElement.querySelector("#stmb-memory-boundary-mode")?.value ??
       settings.moduleSettings.memoryBoundaryMode,
   );
+  const previewRecoveredMemories = normalizeRecoveredMemoryPreviewMode(
+    popupElement.querySelector("#stmb-preview-recovered-memories")?.value ??
+      settings.moduleSettings.previewRecoveredMemories,
+  );
+  const jsonLineBreakMode = normalizeJsonLineBreakMode(
+    popupElement.querySelector("#stmb-json-line-breaks")?.value ??
+      settings.moduleSettings.jsonLineBreakMode,
+  );
   const unhideBeforeMemory =
     popupElement.querySelector("#stmb-unhide-before-memory")?.checked ??
     settings.moduleSettings.unhideBeforeMemory;
@@ -12135,6 +12284,16 @@ function persistMainPopupSettings(popupElement) {
   if (showFloatingClipButton !== (settings.moduleSettings.showFloatingClipButton !== false)) {
     settings.moduleSettings.showFloatingClipButton = showFloatingClipButton;
     refreshFloatingClipButtonSetting();
+    hasChanges = true;
+  }
+
+  if (jsonLineBreakMode !== settings.moduleSettings.jsonLineBreakMode) {
+    settings.moduleSettings.jsonLineBreakMode = jsonLineBreakMode;
+    hasChanges = true;
+  }
+
+  if (previewRecoveredMemories !== settings.moduleSettings.previewRecoveredMemories) {
+    settings.moduleSettings.previewRecoveredMemories = previewRecoveredMemories;
     hasChanges = true;
   }
 
@@ -13370,6 +13529,18 @@ function setupEventListeners() {
 }
 
 /**
+ * The failure context holds the lorebook as loaded when the memory failed.
+ * Reload it before saving, so a later save cannot write that old copy back
+ * over changes made since (another memory, a manual edit).
+ */
+async function reloadFailureLorebook(lorebookValidation) {
+  return {
+    ...lorebookValidation,
+    data: await loadLatestLorebookForJob(lorebookValidation?.name),
+  };
+}
+
+/**
  * Show a popup with details for a failed AI response, including raw response and provider body if available.
  */
 async function applyManualFixedJson(correctedRaw) {
@@ -13438,7 +13609,9 @@ async function applyManualFixedJson(correctedRaw) {
 
     let jsonResult;
     try {
-      jsonResult = parseAIJsonResponse(trimmedRaw);
+      jsonResult = parseAIJsonResponse(trimmedRaw, {
+        profile: context.profileSettings,
+      });
     } catch (error) {
       const msg = error?.message || "Failed to parse corrected JSON.";
       const code = error?.code ? ` [${error.code}]` : "";
@@ -13469,7 +13642,14 @@ async function applyManualFixedJson(correctedRaw) {
       );
       return;
     }
-    if (!Array.isArray(jsonResult.keywords)) {
+    const cleanKeywords = usableKeywords(jsonResult.keywords);
+    // The parser always yields a keywords array; block one with no usable
+    // keyword only when the profile's activation mode needs keywords, while
+    // the editor is open.
+    if (
+      cleanKeywords.length === 0 &&
+      memoryKeywordsRequired(context.profileSettings?.constVectMode, extension_settings)
+    ) {
       toastr.error(
         translate(
           "Corrected JSON is missing keywords array.",
@@ -13489,9 +13669,6 @@ async function applyManualFixedJson(correctedRaw) {
       ""
     ).trim();
     const cleanTitle = (jsonResult.title || "Memory").trim();
-    const cleanKeywords = Array.isArray(jsonResult.keywords)
-      ? jsonResult.keywords.filter((k) => k && typeof k === "string" && k.trim() !== "")
-      : [];
     const resolvedSceneStats = context.sceneStats || null;
     const sceneRange =
       context.sceneRange ||
@@ -13523,6 +13700,7 @@ async function applyManualFixedJson(correctedRaw) {
           ? { estimatedTokens: resolvedSceneStats.estimatedTokens }
           : undefined,
         generationMethod: "manual-json-repair",
+        parseLevel: jsonResult.stmbParseLevel || "strict",
         version: "2.0",
       },
       suggestedKeys: cleanKeywords,
@@ -13570,18 +13748,20 @@ async function applyManualFixedJson(correctedRaw) {
     const automaticGroupAddOptions = shouldWriteManualGroupLorebooks
       ? {}
       : getAutomaticGroupMemoryAddOptions(memoryResult, compiledScene, saveContext);
+    const lorebookValidation = await reloadFailureLorebook(context.lorebookValidation);
+    throwIfStmbStopped(runEpoch);
     const addResult =
       shouldWriteManualGroupLorebooks
         ? await addMemoryToManualGroupLorebooks(
             memoryResult,
-            context.lorebookValidation,
+            lorebookValidation,
             getMultiCharacterWriteOptions(manualGroupLorebooks, memoryResult, saveContext, {
               copyTargets: getMultiCharacterCopyTargets(memoryResult, manualGroupLorebooks, saveContext),
             }),
           )
         : await addMemoryToLorebook(
             memoryResult,
-            context.lorebookValidation,
+            lorebookValidation,
             automaticGroupAddOptions,
           );
     throwIfStmbStopped(runEpoch);
@@ -13589,6 +13769,7 @@ async function applyManualFixedJson(correctedRaw) {
     if (!addResult.success) {
       throw new Error(addResult.error || "Failed to add memory to lorebook");
     }
+    warnRecoveredMemory(memoryResult);
 
     try {
       const connDbg = profile.effectiveConnection || profile.connection || {};

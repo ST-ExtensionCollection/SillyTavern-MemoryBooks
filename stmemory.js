@@ -12,6 +12,7 @@ import { translate } from '../../../i18n.js';
 import dirtyJson from 'dirty-json';
 import { applyGroupMemoryPolicy, getGroupMemoryProfile } from './groupChatPolicy.js';
 import { getSceneMarkers } from './sceneManager.js';
+import { stripReasoningNoise, recoverMemoryFields, memoryKeywordsRequired, lineBreakVariants, usableKeywords } from './aiResponseCleanup.js';
 import {
     CONTEXT_NONE_KEY,
     getContextSetting,
@@ -952,13 +953,32 @@ function makeAIError(code, message, recoverable = true) {
 }
 
 /**
+ * Marks how a parse result was obtained ('repaired' by dirty-json or
+ * 'recovered' by regex field recovery) without adding an enumerable key.
+ * Strict JSON.parse results carry no mark.
+ * @param {Object} obj
+ * @param {'repaired'|'recovered'} level
+ * @returns {Object} obj
+ */
+function tagParseLevel(obj, level) {
+    Object.defineProperty(obj, 'stmbParseLevel', { value: level, enumerable: false });
+    return obj;
+}
+
+/**
  * Parses AI response as JSON with robust error handling
  * @private
  * @param {string} aiResponse - Raw AI response text
- * @returns {Object} Parsed JSON object
+ * @param {{profile?: Object}} [options] - When the profile's activation mode does
+ *   not need keywords (see memoryKeywordsRequired), a missing keywords field is
+ *   accepted as [] and a comma-separated string as an array; otherwise such a
+ *   response is only accepted through regex recovery
+ * @returns {Object} Parsed JSON object; a non-enumerable stmbParseLevel of
+ *   'repaired' or 'recovered' marks a result that needed repair (see tagParseLevel)
  * @throws {AIResponseError} If JSON parsing fails
  */
-export function parseAIJsonResponse(aiResponse) {
+export function parseAIJsonResponse(aiResponse, { profile } = {}) {
+    const requireKeywords = memoryKeywordsRequired(profile?.constVectMode, extension_settings);
     let cleanResponse = aiResponse;
 
     // Apply user-selected incoming regex scripts (bypass engine gating)
@@ -1012,27 +1032,41 @@ export function parseAIJsonResponse(aiResponse) {
         throw err;
     }
 
+    // Raw text for the fix windows: as the AI returned it, before incoming regex
+    // scripts and cleanup, since parsing a correction runs them again.
+    const responseText = typeof aiResponse === 'string' ? aiResponse : cleanResponse;
+
     cleanResponse = cleanResponse.trim();
 
-    // Remove <think> tags and their content
-    cleanResponse = cleanResponse.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Strip reasoning / harmony channel noise (<think>, <|channel|>analysis<|message|>, ...)
+    cleanResponse = stripReasoningNoise(cleanResponse, getContext?.()?.parseReasoningFromString);
 
-    // Normalize and prepare candidates
-    const normalized = normalizeText(cleanResponse);
+    // Normalize and prepare candidates. Raw line breaks are handled per the
+    // "Line breaks in AI JSON" setting; each variant yields its own candidates,
+    // most faithful first.
+    const lineBreakMode = extension_settings?.STMemoryBooks?.moduleSettings?.jsonLineBreakMode;
+    const variants = lineBreakVariants(cleanResponse, lineBreakMode).map(normalizeText);
+    const normalized = variants[0];
     const candidates = [];
 
-    // 1) Prefer fenced code blocks if present (handles ```json, ```jsonc, ```javascript, etc.)
-    const fenced = extractFencedBlocks(normalized);
-    if (fenced.length) candidates.push(...fenced);
+    for (const variant of variants) {
+        // 1) Prefer fenced code blocks if present (handles ```json, ```jsonc, ```javascript, etc.)
+        const fenced = extractFencedBlocks(variant);
+        if (fenced.length) candidates.push(...fenced);
 
-    // 2) Consider entire normalized text (in case it's pure JSON already)
-    candidates.push(normalized);
+        // 2) Consider entire normalized text (in case it's pure JSON already)
+        candidates.push(variant);
 
-    // 3) Balanced JSON substring from the whole string
-    const balanced = extractBalancedJson(normalized);
-    if (balanced) candidates.push(balanced);
+        // 3) Balanced JSON substring from the whole string
+        const balanced = extractBalancedJson(variant);
+        if (balanced) candidates.push(balanced);
+    }
 
     const uniq = uniqStrings(candidates);
+
+    // dirty-json would quietly complete a truncated object, so it only sees
+    // candidates that end like a complete object.
+    const looksComplete = (c) => /\}\s*$/.test(c);
 
     const validateParsed = (obj) => {
         if (!obj || typeof obj !== 'object') {
@@ -1045,15 +1079,22 @@ export function parseAIJsonResponse(aiResponse) {
             return makeAIError('MISSING_FIELDS_TITLE', 'AI response missing title field', false);
         }
         if (!Array.isArray(obj.keywords)) {
-            return makeAIError('INVALID_KEYWORDS', 'AI response missing or invalid keywords array.', false);
+            if (requireKeywords) {
+                return makeAIError('INVALID_KEYWORDS', 'AI response missing or invalid keywords array.', false);
+            }
+            // Optional keywords: keep a comma-separated string, drop anything else.
+            obj.keywords = typeof obj.keywords === 'string'
+                ? obj.keywords.split(',').map(k => k.trim()).filter(Boolean)
+                : [];
         }
         return null;
     };
 
-    // Attempt parse with light repair when needed
+    // Strict parse on every candidate first, so a clean parse of a later
+    // candidate (e.g. the spaced line-break variant) wins over a dirty-json
+    // repair of an earlier one.
     let lastFieldError = null;
     for (const cand of uniq) {
-        // Direct parse
         try {
             const parsedDirect = JSON.parse(cand);
             const fieldErr = validateParsed(parsedDirect);
@@ -1063,32 +1104,56 @@ export function parseAIJsonResponse(aiResponse) {
                 return parsedDirect;
             }
         } catch {
-            // ignore and try repair parse below
+            // try the next candidate, then repair parse below
         }
+    }
 
-        // Repair parse (dirty-json)
+    // Repair parse (dirty-json)
+    for (const cand of uniq) {
+        if (!looksComplete(cand)) continue;
         try {
             const parsedRepaired = dirtyJson.parse(cand);
             const fieldErr = validateParsed(parsedRepaired);
             if (fieldErr) {
                 lastFieldError = fieldErr;
             } else {
-                return parsedRepaired;
+                return tagParseLevel(parsedRepaired, 'repaired');
             }
         } catch {
             // continue trying other candidates
         }
     }
 
+    // Last resort: pull the fields out individually, e.g. when an unescaped
+    // quote elsewhere breaks the object but each field value is well-formed,
+    // or when keywords are missing although the activation mode needs them.
+    // Recovery also gets the span from the first '{' to the last '}', so a
+    // closing remark after a broken object does not hide the object's end.
+    // dirty-json never sees it: in a response cut off inside the content, a
+    // '}' in the text would end the span and dirty-json would complete it.
+    const braceSpans = variants
+        .map(variant => {
+            const objStart = variant.indexOf('{');
+            const objEnd = variant.lastIndexOf('}');
+            return objStart !== -1 && objEnd > objStart ? variant.slice(objStart, objEnd + 1) : null;
+        })
+        .filter(Boolean);
+    const recoveryCandidates = uniqStrings([...uniq, ...braceSpans]);
+    const recovered = recoverMemoryFields(recoveryCandidates);
+    if (recovered) {
+        console.debug('STMemoryBooks: recovered memory fields via regex fallback (structured JSON parse failed).');
+        return tagParseLevel(recovered, 'recovered');
+    }
+
     // Classify failure
     if (!hasAnyJsonDelimiter(normalized)) {
         const err = makeAIError('NO_JSON_BLOCK', 'AI response did not contain a JSON block. The model may have returned prose or declined the request.', true);
-        err.rawResponse = normalized;
+        err.rawResponse = responseText;
         throw err;
     }
     if (likelyUnbalanced(normalized)) {
         const err = makeAIError('UNBALANCED', 'AI response appears truncated or invalid JSON (unbalanced structures). Try increasing Max Response Length.', false);
-        err.rawResponse = normalized;
+        err.rawResponse = responseText;
         throw err;
     }
 
@@ -1096,27 +1161,27 @@ export function parseAIJsonResponse(aiResponse) {
     const textCandidate = normalized.trim();
     if (textCandidate && textCandidate.length >= 80 && !endsNicely(textCandidate)) {
         const err = makeAIError('INCOMPLETE_SENTENCE', 'AI response JSON appears incomplete (text ends mid-sentence). Try increasing Max Response Length.', false);
-        err.rawResponse = normalized;
+        err.rawResponse = responseText;
         throw err;
     }
 
     // If we parsed something but it was missing required fields, surface that error
     if (lastFieldError) {
-        lastFieldError.rawResponse = normalized;
+        lastFieldError.rawResponse = responseText;
         throw lastFieldError;
     }
 
     // Fallback
     {
         const err = makeAIError('MALFORMED', 'AI did not return valid JSON. This may indicate the model does not support structured output well or the response contained unsupported formatting.', false);
-        err.rawResponse = normalized;
+        err.rawResponse = responseText;
         throw err;
     }
 }
 
 // Build a memory object from a corrected raw response using the existing parser
  export function generateMemoryFromRaw(correctedRaw, profile) {
-    const jsonResult = parseAIJsonResponse(correctedRaw);
+    const jsonResult = parseAIJsonResponse(correctedRaw, { profile });
     return {
         content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
         title: jsonResult.title || 'Memory',
@@ -1245,7 +1310,7 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
 
         let jsonResult;
         try {
-            jsonResult = parseAIJsonResponse(aiResponseText);
+            jsonResult = parseAIJsonResponse(aiResponseText, { profile });
         } catch (error) {
             if (
                 error instanceof AIResponseError
@@ -1268,7 +1333,10 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
             content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
             title: jsonResult.title || 'Memory',
             keywords: jsonResult.keywords || [],
-            profile: profile
+            profile: profile,
+            parseLevel: jsonResult.stmbParseLevel || 'strict',
+            // Kept only for a result that needed repair, so the preview can show it
+            rawResponse: jsonResult.stmbParseLevel ? aiResponseText : null,
         };
     } catch (error) {
         if (isStmbStopError(error)) throw error;
@@ -1351,6 +1419,7 @@ export async function createMemory(compiledScene, profile, options = {}) {
                 presetUsed: profile.preset || 'custom',
                 tokenUsage: tokenEstimate,
                 generationMethod: 'json-structured-output',
+                parseLevel: response.parseLevel || 'strict',
                 version: '2.0'
             },
             suggestedKeys: processedMemory.suggestedKeys,
@@ -1382,6 +1451,13 @@ export async function createMemory(compiledScene, profile, options = {}) {
                 useProbability: false
             }
         };
+        if (response.rawResponse) {
+            // Non-enumerable, so clones, job payloads and lorebook writes never carry it;
+            // the memory preview drops it when it closes.
+            Object.defineProperty(memoryResult, 'stmbRawResponse', {
+                value: response.rawResponse, enumerable: false, writable: true, configurable: true,
+            });
+        }
         
         return memoryResult;
         
@@ -1661,8 +1737,7 @@ function processJsonResult(jsonResult, compiledScene) {
     // Clean and validate content
     const cleanContent = (content || jsonResult.summary || jsonResult.memory_content || '').trim();
     const cleanTitle = (title || 'Memory').trim();
-    const cleanKeywords = Array.isArray(keywords) ? 
-        keywords.filter(k => k && typeof k === 'string' && k.trim() !== '').map(k => k.trim()) : [];
+    const cleanKeywords = usableKeywords(keywords);
     
     return {
         content: cleanContent,

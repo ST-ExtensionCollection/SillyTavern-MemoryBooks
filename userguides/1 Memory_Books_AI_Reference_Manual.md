@@ -484,6 +484,14 @@ When **Show memory previews** is enabled, review and optionally edit:
 
 Check names, attribution, facts, omitted consequences, and unrelated commentary. Without previews, a valid result is saved automatically.
 
+**Preview recovered memories** opens the same preview, even with **Show memory previews** off, when the AI's JSON was broken and STMB had to rebuild the memory from it (see [Ordinary Memory generation](#211-ordinary-memory-generation)). The preview then shows a warning asking you to check the title, content, and keywords, and a **View or fix the original response** link. The link opens the AI's original response in an editor over the preview. **Apply to preview** parses your corrected text again and fills the preview's title, content, and keywords; if it is still invalid, the editor stays open. The original response is discarded when the preview closes. Options:
+
+- **Recovered from broken JSON** (default) — preview only Memories rebuilt field by field, which may have missing or partial keywords;
+- **Recovered or repaired JSON** — also preview Memories whose JSON needed a lighter repair (for example trailing commas or single quotes); some models need this on most responses;
+- **Off** — save without the extra preview.
+
+When no preview opens (the option is off, or during `/stmb-catchup`), a recovered Memory is still saved and a warning names it so you can check it in the lorebook.
+
 ### 8.5 Automatic Memories
 
 Enable **Auto-create memory summaries** and configure:
@@ -625,6 +633,14 @@ The memory content determines what the model learns. Keywords help determine whe
 - **Vectorized:** uses vector-related retrieval when the user’s setup supports it.
 
 Vectors are optional. STMB works through keywords without the Vectors extension.
+
+SillyTavern still keyword-scans Vectorized entries. Vector Storage activates them from their content only when its **Enable for World Info** setting is on. Whether STMB requires the AI to return keywords depends on this:
+
+- **Constant:** keywords are optional.
+- **Vectorized:** keywords are optional while Vector Storage is enabled for World Info; otherwise they are required, because they are the entry's only trigger.
+- **Normal:** keywords are required, unless Vector Storage is enabled for World Info with its option to include all entries.
+
+When keywords are optional, a response with no `keywords` field is saved with no keywords, and a comma-separated keywords string is split into a list. When keywords are required, such a response is still saved through recovery (see [Ordinary Memory generation](#211-ordinary-memory-generation)), so check its keywords before relying on it. Keywords still help even when optional: they also trigger the entry by keyword match.
 
 ### 10.3 Recommended global World Info settings
 
@@ -1769,13 +1785,13 @@ Rules:
 
 - return only the JSON object;
 - use the exact keys `title`, `content`, and `keywords`;
-- `keywords` must be a JSON array of strings;
+- `keywords` must be a JSON array of strings (when the activation mode needs keywords, a missing array is only accepted through recovery; see [Activation modes](#102-activation-modes));
 - keep the title short and readable;
 - use concrete retrieval terms;
 - place any desired Markdown inside the `content` string;
 - escape quotation marks correctly.
 
-STMB can repair some fences, trailing commas, think tags, wrappers, or minor malformed output, but prompts should never depend on recovery.
+STMB can repair some fences, trailing commas, wrappers, or minor malformed output. It also removes reasoning text before parsing: `<think>` blocks, leading `<thinking>`/`<thought>`/`<reasoning>`/`<analysis>` blocks, a leading block in SillyTavern's active reasoning template, and harmony channel markup (keeping only the `final` channel when present, and removing an `analysis` channel closed by `<|end|>`). Reasoning tags inside the JSON itself are kept. Raw line breaks inside the JSON are handled by **Line breaks in AI JSON**: by default STMB detects line breaks inside a string and keeps them as paragraph breaks in the Memory, falling back to spaces if detection fails; **Replace with spaces** always uses spaces, and **Remove (legacy)** deletes them, which can glue words together. If the object is still broken, STMB can recover `title`, `content`, and `keywords` individually, preferring a fenced JSON block over surrounding text. Repair only accepts an object that ends with its closing `}`, and recovery only accepts a `title` and `content` whose text is complete (recovery also ignores text after the object's last `}`, such as a closing remark), so a response cut off inside its content fails as truncated instead of being saved partially, even when a complete `summary` is also present. Recovery also requires exactly one `title`. Keywords never block recovery: the complete keywords before a cut are kept, a comma-separated keywords string is split, and a missing `keywords` field gives a memory with no keywords. Check them in the memory preview or the lorebook entry; **Preview recovered memories** opens that preview automatically (see [Memory previews](#84-memory-previews)). Prompts should never depend on recovery.
 
 A strong Memory prompt states:
 
@@ -2063,6 +2079,8 @@ Open **Settings → General Settings** in the main panel.
 | **Always use default profile (no confirmation prompt)** | Global | Skips the normal pre-generation confirmation window. Required for non-interactive catch-up; independent warnings and enabled previews can still appear. |
 | **Automatically accept detected participants in future** | Global | Stops asking for real-group participant confirmation and accepts STMB's detected participant set for later Memories. |
 | **Show memory previews** | Global | Opens an editable review before saving generated Memories and applicable Side Prompt output. |
+| **Line breaks in AI JSON** | Global | How raw line breaks in the AI's Memory JSON are handled: keep them inside strings (detect, default), replace them with spaces, or remove them (legacy). |
+| **Preview recovered memories** | Global | Opens the Memory preview, even with previews off, when the AI's JSON had to be recovered (default) or also repaired. `/stmb-catchup` shows a warning instead. |
 | **Show consolidation previews** | Global | Opens review controls for generated consolidation candidates before they are committed. |
 | **Show notifications** | Global | Enables STMB toast notifications. |
 | **Show floating Clip button when text is highlighted** | Global | Shows the floating scissors control after selecting chat text. |
@@ -2385,7 +2403,7 @@ Check in this order:
 6. provider supports the selected structured-output mode;
 7. try Skip Structured Output only if the provider rejects schemas;
 8. try a more instruction-following model before rewriting the prompt;
-9. click **Raw response from AI** in the persistent error notification to inspect the captured provider response and use the manual JSON correction interface when available.
+9. click **Raw response from AI** in the persistent error notification to inspect the response as the AI returned it (before incoming regex scripts and cleanup, which run again when the correction is parsed) and use the manual JSON correction interface when available. The corrected JSON is saved directly, so when the profile's activation mode needs keywords (see [Activation modes](#102-activation-modes)), a correction without keywords is refused and the editor stays open.
 
 Common causes include code fences, commentary, a missing key, keywords not being an array, refusal text, or cut-off output.
 

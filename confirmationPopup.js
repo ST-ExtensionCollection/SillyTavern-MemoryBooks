@@ -11,6 +11,7 @@ import { identifyMemoryEntries } from './addlore.js';
 import { tr } from './i18nHelpers.js';
 import { createProfileObject, getUIModelSettings, getCurrentApiInfo, getEffectivePrompt, generateSafeProfileName, getEffectiveLorebookName, markStmbPopup } from './utils.js';
 import { playMessageSound } from '../../../power-user.js';
+import { generateMemoryFromRaw } from './stmemory.js';
 
 const MODULE_NAME = 'STMemoryBooks-ConfirmationPopup';
 
@@ -615,6 +616,7 @@ export async function confirmSaveNewProfile(profileName) {
  */
 export async function showMemoryPreviewPopup(memoryResult, sceneData, profileSettings, options = {}) {
   let popup = null;
+  let rawEditorPopup = null;
   try {
     // Input validation
     if (!memoryResult || typeof memoryResult !== 'object') {
@@ -660,6 +662,8 @@ export async function showMemoryPreviewPopup(memoryResult, sceneData, profileSet
       sceneEnd: sceneData.sceneEnd,
       messageCount: sceneData.messageCount,
       titleReadonly: !!options.lockTitle,
+      recoveredNotice: ['recovered', 'repaired'].includes(memoryResult.metadata?.parseLevel),
+      hasRawResponse: typeof memoryResult.stmbRawResponse === 'string' && !!memoryResult.stmbRawResponse,
       profileName: (profileSettings?.isBuiltinCurrentST)
         ? translate('Current SillyTavern Settings', 'STMemoryBooks_Profile_CurrentST')
         : (profileSettings.name || translate('Unknown Profile', 'STMemoryBooks_UnknownProfile'))
@@ -685,6 +689,19 @@ export async function showMemoryPreviewPopup(memoryResult, sceneData, profileSet
       ]
     });
     markStmbPopup(popup);
+
+    popup.dlg.querySelector('#stmb-preview-raw-link')?.addEventListener('click', async (event) => {
+      event.preventDefault();
+      if (rawEditorPopup) return;
+      rawEditorPopup = createRawResponseEditor(popup.dlg, memoryResult, profileSettings, options);
+      activeMemoryPreviewPopups.add(rawEditorPopup);
+      try {
+        await rawEditorPopup.show();
+      } finally {
+        activeMemoryPreviewPopups.delete(rawEditorPopup);
+        rawEditorPopup = null;
+      }
+    });
 
     activeMemoryPreviewPopups.add(popup);
     const result = await popup.show();
@@ -779,7 +796,76 @@ export async function showMemoryPreviewPopup(memoryResult, sceneData, profileSet
     if (popup) {
       activeMemoryPreviewPopups.delete(popup);
     }
+    try {
+      rawEditorPopup?.completeCancelled();
+    } catch {}
+    // The raw response is only for this preview; drop it once the preview closes
+    if (memoryResult && typeof memoryResult === 'object') {
+      delete memoryResult.stmbRawResponse;
+    }
   }
+}
+
+/**
+ * Popup for viewing and fixing the AI's original response from a memory preview.
+ * Applying re-parses the edited response and fills the preview's title (unless
+ * locked), content, and keywords; an invalid response keeps the editor open.
+ * @param {HTMLElement} previewDlg - The memory preview dialog
+ * @param {Object} memoryResult - Carries the raw response as stmbRawResponse
+ * @param {Object} profileSettings - Profile used to parse (keywords requirement)
+ * @param {{lockTitle?: boolean}} [options]
+ * @returns {Popup}
+ */
+function createRawResponseEditor(previewDlg, memoryResult, profileSettings, options = {}) {
+  const content = DOMPurify.sanitize(`
+    <h3 data-i18n="STMemoryBooks_ReviewFailedAI_RawLabel">Raw AI Response</h3>
+    <div class="world_entry_form_control">
+      <small class="marginBot10" data-i18n="STMemoryBooks_MemoryPreviewRawDesc">Fix the AI's original response, then apply it to read the title, content, and keywords into the preview again.</small>
+      <textarea id="stmb-preview-raw-editor" class="text_pole" style="width: 100%; min-height: 220px; max-height: 360px; white-space: pre; overflow:auto;"></textarea>
+    </div>
+  `);
+
+  const editor = new Popup(content, POPUP_TYPE.CONFIRM, '', {
+    okButton: translate('Apply to preview', 'STMemoryBooks_MemoryPreviewRawApply'),
+    cancelButton: translate('Cancel', 'STMemoryBooks_Cancel'),
+    wide: true,
+    allowVerticalScrolling: true,
+    onClosing: (closingPopup) => {
+      if (closingPopup.result !== POPUP_RESULT.AFFIRMATIVE) return true;
+      const editedRaw = closingPopup.dlg.querySelector('#stmb-preview-raw-editor')?.value ?? '';
+      let parsed;
+      try {
+        parsed = generateMemoryFromRaw(editedRaw, profileSettings);
+      } catch (error) {
+        const code = error?.code ? ` [${error.code}]` : '';
+        toastr.error(
+          tr('STMemoryBooks_MemoryPreviewRawInvalid', 'The response is still invalid{{code}}: {{message}}', {
+            code,
+            message: error?.message || '',
+          }),
+          translate('STMemoryBooks', 'confirmationPopup.toast.title'),
+        );
+        return false;
+      }
+      if (!options?.lockTitle) {
+        const titleElement = previewDlg.querySelector('#stmb-preview-title');
+        if (titleElement) titleElement.value = parsed.title;
+      }
+      const contentElement = previewDlg.querySelector('#stmb-preview-content');
+      if (contentElement) contentElement.value = parsed.content;
+      // Keep keywords typed into the preview when the response has none
+      const keywordsElement = previewDlg.querySelector('#stmb-preview-keywords');
+      if (keywordsElement && parsed.keywords.length > 0) {
+        keywordsElement.value = previewKeywordsToString(parsed.keywords);
+      }
+      memoryResult.stmbRawResponse = editedRaw;
+      return true;
+    },
+  });
+  markStmbPopup(editor);
+  const textarea = editor.dlg.querySelector('#stmb-preview-raw-editor');
+  if (textarea) textarea.value = memoryResult.stmbRawResponse || '';
+  return editor;
 }
 
 function previewKeywordsToString(keywords) {
