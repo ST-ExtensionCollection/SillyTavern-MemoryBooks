@@ -46,6 +46,7 @@ import {
   getSceneStats,
 } from "./chatcompile.js";
 import { createMemory, parseAIJsonResponse } from "./stmemory.js";
+import { memoryKeywordsRequired } from "./aiResponseCleanup.js";
 import {
   addMemoryToLorebook,
   DEFAULT_LOREBOOK_ENTRY_SETTINGS,
@@ -13436,9 +13437,15 @@ async function applyManualFixedJson(correctedRaw) {
       return;
     }
 
+    const keywordsRequired = memoryKeywordsRequired(
+      context.profileSettings?.constVectMode,
+      extension_settings,
+    );
     let jsonResult;
     try {
-      jsonResult = parseAIJsonResponse(trimmedRaw);
+      jsonResult = parseAIJsonResponse(trimmedRaw, {
+        requireKeywords: keywordsRequired,
+      });
     } catch (error) {
       const msg = error?.message || "Failed to parse corrected JSON.";
       const code = error?.code ? ` [${error.code}]` : "";
@@ -13469,7 +13476,7 @@ async function applyManualFixedJson(correctedRaw) {
       );
       return;
     }
-    if (!Array.isArray(jsonResult.keywords)) {
+    if (keywordsRequired && !Array.isArray(jsonResult.keywords)) {
       toastr.error(
         translate(
           "Corrected JSON is missing keywords array.",

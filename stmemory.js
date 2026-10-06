@@ -12,7 +12,7 @@ import { translate } from '../../../i18n.js';
 import dirtyJson from 'dirty-json';
 import { applyGroupMemoryPolicy, getGroupMemoryProfile } from './groupChatPolicy.js';
 import { getSceneMarkers } from './sceneManager.js';
-import { stripReasoningNoise, recoverMemoryFields } from './aiResponseCleanup.js';
+import { stripReasoningNoise, recoverMemoryFields, memoryKeywordsRequired } from './aiResponseCleanup.js';
 import {
     CONTEXT_NONE_KEY,
     getContextSetting,
@@ -956,10 +956,13 @@ function makeAIError(code, message, recoverable = true) {
  * Parses AI response as JSON with robust error handling
  * @private
  * @param {string} aiResponse - Raw AI response text
+ * @param {{requireKeywords?: boolean}} [options] - requireKeywords=false accepts a
+ *   missing keywords field as [] and a comma-separated string as an array
+ *   (see memoryKeywordsRequired)
  * @returns {Object} Parsed JSON object
  * @throws {AIResponseError} If JSON parsing fails
  */
-export function parseAIJsonResponse(aiResponse) {
+export function parseAIJsonResponse(aiResponse, { requireKeywords = true } = {}) {
     let cleanResponse = aiResponse;
 
     // Apply user-selected incoming regex scripts (bypass engine gating)
@@ -1046,7 +1049,13 @@ export function parseAIJsonResponse(aiResponse) {
             return makeAIError('MISSING_FIELDS_TITLE', 'AI response missing title field', false);
         }
         if (!Array.isArray(obj.keywords)) {
-            return makeAIError('INVALID_KEYWORDS', 'AI response missing or invalid keywords array.', false);
+            if (requireKeywords) {
+                return makeAIError('INVALID_KEYWORDS', 'AI response missing or invalid keywords array.', false);
+            }
+            // Optional keywords: keep a comma-separated string, drop anything else.
+            obj.keywords = typeof obj.keywords === 'string'
+                ? obj.keywords.split(',').map(k => k.trim()).filter(Boolean)
+                : [];
         }
         return null;
     };
@@ -1083,7 +1092,7 @@ export function parseAIJsonResponse(aiResponse) {
 
     // Last resort: pull the fields out individually, e.g. when an unescaped
     // quote elsewhere breaks the object but each field value is well-formed.
-    const recovered = recoverMemoryFields(uniq);
+    const recovered = recoverMemoryFields(uniq, { requireKeywords });
     if (recovered) {
         console.debug('STMemoryBooks: recovered memory fields via regex fallback (structured JSON parse failed).');
         return recovered;
@@ -1125,7 +1134,9 @@ export function parseAIJsonResponse(aiResponse) {
 
 // Build a memory object from a corrected raw response using the existing parser
  export function generateMemoryFromRaw(correctedRaw, profile) {
-    const jsonResult = parseAIJsonResponse(correctedRaw);
+    const jsonResult = parseAIJsonResponse(correctedRaw, {
+        requireKeywords: memoryKeywordsRequired(profile?.constVectMode, extension_settings),
+    });
     return {
         content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
         title: jsonResult.title || 'Memory',
@@ -1254,7 +1265,9 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
 
         let jsonResult;
         try {
-            jsonResult = parseAIJsonResponse(aiResponseText);
+            jsonResult = parseAIJsonResponse(aiResponseText, {
+                requireKeywords: memoryKeywordsRequired(profile?.constVectMode, extension_settings),
+            });
         } catch (error) {
             if (
                 error instanceof AIResponseError

@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recoverMemoryFields, stripReasoningNoise } from './aiResponseCleanup.js';
+import { memoryKeywordsRequired, recoverMemoryFields, stripReasoningNoise } from './aiResponseCleanup.js';
 
 const JSON_PAYLOAD = '{"title":"T","content":"C","keywords":["k"]}';
 
@@ -55,7 +55,7 @@ test('accepts summary and memory_content as content', () => {
     assert.equal(recoverMemoryFields(['{"title":"T","memory_content":"M","keywords":[]}']).content, 'M');
 });
 
-test('returns null when keywords are truncated or missing', () => {
+test('returns null when required keywords are truncated or missing', () => {
     assert.equal(recoverMemoryFields(['{"title":"T","content":"C","keywords":["a","b']), null);
     assert.equal(recoverMemoryFields(['{"title":"T","content":"C"']), null);
 });
@@ -70,4 +70,37 @@ test('prefers the earliest candidate that has every field', () => {
     const whole = 'draft "title":"Draft","content":"Old","keywords":[] then ' + fenced;
     assert.equal(recoverMemoryFields([fenced, whole]).title, 'Final');
     assert.equal(recoverMemoryFields(['no fields here', whole]).title, 'Draft');
+});
+
+test('keywords are optional for constant entries', () => {
+    assert.equal(memoryKeywordsRequired('blue'), false);
+    assert.equal(memoryKeywordsRequired(' Blue ', {}), false);
+});
+
+test('vectorized entries need keywords unless Vector Storage handles World Info', () => {
+    const on = { vectors: { enabled_world_info: true } };
+    assert.equal(memoryKeywordsRequired('link', on), false);
+    assert.equal(memoryKeywordsRequired(undefined, on), false);
+    assert.equal(memoryKeywordsRequired('link', {}), true);
+    assert.equal(memoryKeywordsRequired('link', { vectors: { enabled_world_info: false } }), true);
+    assert.equal(memoryKeywordsRequired('link', { ...on, disabledExtensions: ['vectors'] }), true);
+});
+
+test('normal entries need keywords unless Vector Storage covers all entries', () => {
+    assert.equal(memoryKeywordsRequired('green', { vectors: { enabled_world_info: true } }), true);
+    assert.equal(memoryKeywordsRequired('green', { vectors: { enabled_world_info: true, enabled_for_all: true } }), false);
+});
+
+test('optional keywords: missing array recovers with none', () => {
+    assert.deepEqual(
+        recoverMemoryFields(['{"title":"T","content":"C"'], { requireKeywords: false }),
+        { title: 'T', content: 'C', keywords: [] },
+    );
+});
+
+test('optional keywords: truncated array keeps only complete keywords', () => {
+    assert.deepEqual(
+        recoverMemoryFields(['{"title":"T","content":"C","keywords":["a","b'], { requireKeywords: false }).keywords,
+        ['a'],
+    );
 });

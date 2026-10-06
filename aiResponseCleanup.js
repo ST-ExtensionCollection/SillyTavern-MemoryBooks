@@ -52,6 +52,27 @@ export function stripReasoningNoise(input, parseReasoning = null) {
         .trim();
 }
 
+/**
+ * Whether a Memory saved with this activation mode needs keywords to activate.
+ * - Constant (blue) entries always activate.
+ * - Vector Storage, when enabled for World Info, activates vectorized (link,
+ *   the default) entries by content similarity, and every entry when "all
+ *   entries" is on. SillyTavern still keyword-scans vectorized entries, so
+ *   without Vector Storage they rely on keywords like Normal (green) entries.
+ * @param {string} [constVectMode] - 'link' | 'green' | 'blue' (default 'link')
+ * @param {object} [extensionSettings] - SillyTavern extension_settings
+ * @returns {boolean}
+ */
+export function memoryKeywordsRequired(constVectMode, extensionSettings = {}) {
+    const mode = String(constVectMode ?? '').trim().toLowerCase();
+    if (mode === 'blue') return false;
+    const vectors = extensionSettings?.vectors;
+    const vectorsDisabled = Array.isArray(extensionSettings?.disabledExtensions)
+        && extensionSettings.disabledExtensions.includes('vectors');
+    if (vectorsDisabled || vectors?.enabled_world_info !== true) return true;
+    return mode === 'green' && vectors.enabled_for_all !== true;
+}
+
 function unescapeJsonString(s) {
     try {
         return JSON.parse(`"${s}"`);
@@ -71,23 +92,29 @@ function grabJsonString(text, key) {
 
 /**
  * Last-resort recovery of memory fields from text that failed structured
- * parsing. Requires a well-formed title string, a well-formed content string
- * (content/summary/memory_content) and a closed keywords array, so a response
- * truncated mid-keywords still fails as truncated instead of saving a Memory
- * with no keywords.
+ * parsing. Requires a well-formed title string and a well-formed content string
+ * (content/summary/memory_content).
+ * When keywords are required, a closed keywords array is also required, so a
+ * response truncated mid-keywords still fails as truncated. When they are
+ * optional, every complete keyword string is kept and a missing or cut-off
+ * array yields what survived (possibly none).
  * @param {string[]} texts - Candidates, most specific first
+ * @param {{requireKeywords?: boolean}} [options]
  * @returns {{title: string, content: string, keywords: string[]}|null}
  */
-export function recoverMemoryFields(texts) {
+export function recoverMemoryFields(texts, { requireKeywords = true } = {}) {
     for (const text of texts) {
         if (typeof text !== 'string' || !text) continue;
         const rawContent = grabJsonString(text, 'content')
             || grabJsonString(text, 'summary')
             || grabJsonString(text, 'memory_content');
         const rawTitle = grabJsonString(text, 'title');
-        const kwBlock = text.match(/"keywords"\s*:\s*\[([^\]]*)\]/i);
-        if (!rawContent || !rawTitle || !kwBlock) continue;
-        const keywords = (kwBlock[1].match(/"((?:[^"\\]|\\.)*)"/g) || [])
+        const kwBlock = requireKeywords
+            ? text.match(/"keywords"\s*:\s*\[([^\]]*)\]/i)
+            : text.match(/"keywords"\s*:\s*\[([^\]]*)/i);
+        if (!rawContent || !rawTitle) continue;
+        if (requireKeywords && !kwBlock) continue;
+        const keywords = ((kwBlock?.[1] || '').match(/"((?:[^"\\]|\\.)*)"/g) || [])
             .map(s => unescapeJsonString(s.slice(1, -1)).trim())
             .filter(Boolean);
         return {

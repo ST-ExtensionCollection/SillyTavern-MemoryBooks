@@ -626,6 +626,14 @@ The memory content determines what the model learns. Keywords help determine whe
 
 Vectors are optional. STMB works through keywords without the Vectors extension.
 
+SillyTavern still keyword-scans Vectorized entries. Vector Storage activates them from their content only when its **Enable for World Info** setting is on. Whether STMB requires the AI to return keywords depends on this:
+
+- **Constant:** keywords are optional.
+- **Vectorized:** keywords are optional while Vector Storage is enabled for World Info; otherwise they are required, because they are the entry's only trigger.
+- **Normal:** keywords are required, unless Vector Storage is enabled for World Info with its option to include all entries.
+
+When keywords are optional, a response with no `keywords` field is saved with no keywords, and a comma-separated keywords string is split into a list. Keywords still help even when optional: they also trigger the entry by keyword match.
+
 ### 10.3 Recommended global World Info settings
 
 Common starting recommendations:
@@ -1769,13 +1777,13 @@ Rules:
 
 - return only the JSON object;
 - use the exact keys `title`, `content`, and `keywords`;
-- `keywords` must be a JSON array of strings;
+- `keywords` must be a JSON array of strings (STMB accepts a missing array only when the activation mode does not need keywords; see [Activation modes](#102-activation-modes));
 - keep the title short and readable;
 - use concrete retrieval terms;
 - place any desired Markdown inside the `content` string;
 - escape quotation marks correctly.
 
-STMB can repair some fences, trailing commas, wrappers, or minor malformed output. It also removes reasoning text before parsing: `<think>`/`<thinking>` blocks, a leading block in SillyTavern's active reasoning template, and harmony channel markup (keeping only the `final` channel when present). If the object is still broken, STMB can recover `title`, `content`, and a complete `keywords` array individually, preferring a fenced JSON block over surrounding text. Prompts should never depend on recovery.
+STMB can repair some fences, trailing commas, wrappers, or minor malformed output. It also removes reasoning text before parsing: `<think>`/`<thinking>` blocks, a leading block in SillyTavern's active reasoning template, and harmony channel markup (keeping only the `final` channel when present). If the object is still broken, STMB can recover `title`, `content`, and `keywords` individually, preferring a fenced JSON block over surrounding text. A complete `keywords` array is required for recovery only when the activation mode needs keywords; otherwise the complete keywords that survived are kept. Prompts should never depend on recovery.
 
 A strong Memory prompt states:
 
