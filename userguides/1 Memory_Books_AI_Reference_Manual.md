@@ -1775,7 +1775,7 @@ Rules:
 - place any desired Markdown inside the `content` string;
 - escape quotation marks correctly.
 
-STMB can repair some fences, trailing commas, think tags, wrappers, or minor malformed output, but prompts should never depend on recovery.
+STMB can repair some fences, trailing commas, wrappers, or minor malformed output. It also removes reasoning text before parsing: `<think>`/`<thinking>` blocks, a leading block in SillyTavern's active reasoning template, and harmony channel markup (keeping only the `final` channel when present). If the object is still broken, STMB can recover `title`, `content`, and a complete `keywords` array individually, preferring a fenced JSON block over surrounding text. Prompts should never depend on recovery.
 
 A strong Memory prompt states:
 

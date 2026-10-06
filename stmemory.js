@@ -12,6 +12,7 @@ import { translate } from '../../../i18n.js';
 import dirtyJson from 'dirty-json';
 import { applyGroupMemoryPolicy, getGroupMemoryProfile } from './groupChatPolicy.js';
 import { getSceneMarkers } from './sceneManager.js';
+import { stripReasoningNoise, recoverMemoryFields } from './aiResponseCleanup.js';
 import {
     CONTEXT_NONE_KEY,
     getContextSetting,
@@ -1014,8 +1015,8 @@ export function parseAIJsonResponse(aiResponse) {
 
     cleanResponse = cleanResponse.trim();
 
-    // Remove <think> tags and their content
-    cleanResponse = cleanResponse.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Strip reasoning / harmony channel noise (<think>, <|channel|>analysis<|message|>, ...)
+    cleanResponse = stripReasoningNoise(cleanResponse, getContext?.()?.parseReasoningFromString);
 
     // Normalize and prepare candidates
     const normalized = normalizeText(cleanResponse);
@@ -1078,6 +1079,14 @@ export function parseAIJsonResponse(aiResponse) {
         } catch {
             // continue trying other candidates
         }
+    }
+
+    // Last resort: pull the fields out individually, e.g. when an unescaped
+    // quote elsewhere breaks the object but each field value is well-formed.
+    const recovered = recoverMemoryFields(uniq);
+    if (recovered) {
+        console.debug('STMemoryBooks: recovered memory fields via regex fallback (structured JSON parse failed).');
+        return recovered;
     }
 
     // Classify failure
