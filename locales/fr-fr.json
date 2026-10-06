@@ -670,6 +670,8 @@
   "STMemoryBooks_FullManualConfig": "Configuration Manuelle Complète",
   "STMemoryBooks_APIProfileConfigHint": "💡 Conseil pour la configuration du profil : configurez et testez d’abord les connexions dans SillyTavern. Les profils d’API personnalisée peuvent utiliser la connexion personnalisée active ou être liés ci-dessus à un profil de connexion personnalisée précis. La configuration manuelle complète est réservée aux connexions directes exceptionnelles depuis le navigateur.",
   "STMemoryBooks_SkipStructuredOutput": "Ignorer la sortie structurée et utiliser une complétion en texte brut",
+  "STMemoryBooks_GenerateViaActiveApi": "Générer via l'API active de SillyTavern (generateRaw)",
+  "STMemoryBooks_GenerateViaActiveApiDesc": "Envoie la génération des mémoires via l'API actuellement sélectionnée dans SillyTavern au lieu de la connexion de ce profil. Avec une API de complétion de texte (koboldcpp, llama.cpp, ooba, tabby, ...), les modèles d'instruction/de contexte actifs et le préréglage de complétion de texte s'appliquent, y compris Ban EOS Token, la longueur minimale et DRY. Essayez cette option si un modèle local s'arrête en milieu de phrase. Avec la complétion de chat, les paramètres actuels de complétion de chat de SillyTavern sont utilisés. L'API, le modèle, la température et les paramètres de sortie structurée de ce profil sont ignorés ; le réglage STMB « Tokens de réponse max. » s'applique toujours.",
   "STMemoryBooks_TemperatureRange": "Température (0.0 - 2.0) :",
   "STMemoryBooks_TemperaturePlaceholder": "Ne pas laisser vide ! En cas de doute, 0.8.",
   "STMemoryBooks_APIEndpointURL": "URL Endpoint API :",

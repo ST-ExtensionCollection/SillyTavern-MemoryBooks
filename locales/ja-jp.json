@@ -670,6 +670,8 @@
   "STMemoryBooks_FullManualConfig": "完全手動設定",
   "STMemoryBooks_APIProfileConfigHint": "💡 プロファイル設定のヒント：最初にSillyTavernで接続を設定してテストしてください。カスタムAPIプロファイルは、有効なカスタム接続を使用するか、上で特定のカスタム接続プロファイルに関連付けられます。完全手動設定は、例外的にブラウザーから直接接続する場合にのみ使用します。",
   "STMemoryBooks_SkipStructuredOutput": "構造化出力をスキップしてプレーンテキスト補完を使用",
+  "STMemoryBooks_GenerateViaActiveApi": "SillyTavernのアクティブなAPIで生成（generateRaw）",
+  "STMemoryBooks_GenerateViaActiveApiDesc": "このプロファイルの接続ではなく、SillyTavernで現在選択されているAPIを通じてメモリを生成します。テキスト補完API (koboldcpp, llama.cpp, ooba, tabby, ...) では、アクティブなインストラクト/コンテキストテンプレートとテキスト補完プリセット（Ban EOS Token、最小長、DRYを含む）が適用されます。ローカルモデルが文の途中で止まってしまう場合に試してください。チャット補完では、SillyTavernの現在のチャット補完設定が使用されます。このプロファイルのAPI、モデル、温度、構造化出力の設定は無視されます。STMBの「最大応答トークン数」設定は引き続き適用されます。",
   "STMemoryBooks_TemperatureRange": "温度 (0.0 - 2.0):",
   "STMemoryBooks_TemperaturePlaceholder": "空白にしないでください！不明な場合は0.8を入力してください。",
   "STMemoryBooks_APIEndpointURL": "APIエンドポイントURL:",

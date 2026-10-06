@@ -898,6 +898,8 @@ export const localeData_en = {
     'STMemoryBooks_CustomConnectionModelRequired': 'Custom API requires a model ID in either the STMB profile or the selected SillyTavern connection profile.',
     'STMemoryBooks_APIProfileConfigHint': '💡 Profile Setup Hint: Configure and test connections in SillyTavern first. Custom API profiles can use the active Custom connection or bind a specific Custom connection profile above. Full Manual Configuration is only for exceptional direct-browser connections.',
     'STMemoryBooks_SkipStructuredOutput': 'Skip structured output and use plain-text completion',
+    'STMemoryBooks_GenerateViaActiveApi': "Generate through SillyTavern's active API (generateRaw)",
+    'STMemoryBooks_GenerateViaActiveApiDesc': "Sends memory generation through the API currently selected in SillyTavern instead of this profile's connection. With a Text Completion API (koboldcpp, llama.cpp, ooba, tabby, ...), the active instruct/context templates and Text Completion preset apply, including Ban EOS Token, minimum length, and DRY. Try this if a local model keeps stopping mid-sentence. With Chat Completion, SillyTavern's current Chat Completion settings are used. This profile's API, model, temperature, and structured-output settings are ignored; the STMB Max Response Tokens setting still applies.",
     'STMemoryBooks_UseChatCompletionService': 'Use ST\'s ChatCompletionService',
     'STMemoryBooks_UseChatCompletionServiceDesc': "Uses the selected SillyTavern Connection Manager profile, with STMB model and temperature overrides. Without a selected connection profile, uses the existing request helper. Full Manual profiles are not affected.",
     'STMemoryBooks_ChatCompletionPreset': 'Chat Completion Preset:',

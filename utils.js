@@ -1418,6 +1418,7 @@ export function formatPresetDisplayName(presetName) {
  * @param {boolean} [data.preventRecursion=true] - The prevent recursion flag.
  * @param {boolean} [data.delayUntilRecursion=false] - The delay until recursion flag.
  * @param {boolean} [data.skipStructuredOutput=false] - Whether to skip provider structured-output requests.
+ * @param {boolean} [data.generateViaActiveApi=false] - Whether to generate memories through SillyTavern's active API via generateRaw.
  * @param {boolean} [data.useChatCompletionService=false] - Whether to use SillyTavern's ChatCompletionService for eligible requests.
  * @param {string} [data.chatCompletionPreset=''] - Optional SillyTavern chat completion preset for ChatCompletionService.processRequest.
  * @param {string} [data.connectionProfileId=''] - Optional SillyTavern Custom connection profile ID.
@@ -1460,6 +1461,7 @@ export function createProfileObject(data = {}) {
         preventRecursion: data.preventRecursion !== undefined ? data.preventRecursion : true,
         delayUntilRecursion: data.delayUntilRecursion !== undefined ? data.delayUntilRecursion : false,
         skipStructuredOutput: parseBooleanFlag(data.skipStructuredOutput, false),
+        generateViaActiveApi: parseBooleanFlag(data.generateViaActiveApi, false),
     };
 
     // Preserve builtin marker for the STMB-required "Current SillyTavern Settings" profile.

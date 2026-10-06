@@ -666,6 +666,8 @@
   "STMemoryBooks_FullManualConfig": "完全手动配置",
   "STMemoryBooks_APIProfileConfigHint": "💡 配置文件设置提示：请先在 SillyTavern 中配置并测试连接。自定义 API 配置文件可以使用当前的自定义连接，也可以在上方绑定特定的自定义连接配置文件。完全手动配置仅用于特殊的浏览器直连情况。",
   "STMemoryBooks_SkipStructuredOutput": "跳过结构化输出并使用纯文本补全",
+  "STMemoryBooks_GenerateViaActiveApi": "通过 SillyTavern 当前 API 生成 (generateRaw)",
+  "STMemoryBooks_GenerateViaActiveApiDesc": "通过 SillyTavern 当前选择的 API 生成记忆，而不是使用此配置文件的连接。使用文本补全 API (koboldcpp, llama.cpp, ooba, tabby, ...) 时，会应用当前的指令/上下文模板和文本补全预设，包括 Ban EOS Token、最小长度和 DRY。如果本地模型总是在句子中途停止，可以尝试此选项。使用聊天补全时，将使用 SillyTavern 当前的聊天补全设置。此配置文件的 API、模型、温度和结构化输出设置将被忽略；STMB 的“最大响应 tokens”设置仍然有效。",
   "STMemoryBooks_TemperatureRange": "温度 (0.0 - 2.0):",
   "STMemoryBooks_TemperaturePlaceholder": "不要留空！如果不确定，请填写 0.8。",
   "STMemoryBooks_APIEndpointURL": "API 端点 URL:",

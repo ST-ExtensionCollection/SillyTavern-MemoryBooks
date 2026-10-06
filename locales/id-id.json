@@ -669,6 +669,8 @@
   "STMemoryBooks_FullManualConfig": "Konfigurasi Manual Penuh",
   "STMemoryBooks_APIProfileConfigHint": "💡 Petunjuk Pengaturan Profil: konfigurasikan dan uji koneksi di SillyTavern terlebih dahulu. Profil API Kustom dapat menggunakan koneksi Kustom yang aktif atau ditautkan ke profil koneksi Kustom tertentu di atas. Konfigurasi Manual Penuh hanya untuk koneksi langsung melalui peramban dalam keadaan khusus.",
   "STMemoryBooks_SkipStructuredOutput": "Lewati keluaran terstruktur dan gunakan penyelesaian teks biasa",
+  "STMemoryBooks_GenerateViaActiveApi": "Hasilkan melalui API aktif SillyTavern (generateRaw)",
+  "STMemoryBooks_GenerateViaActiveApiDesc": "Mengirim pembuatan memori melalui API yang sedang dipilih di SillyTavern, bukan koneksi profil ini. Dengan API penyelesaian teks (koboldcpp, llama.cpp, ooba, tabby, ...), templat instruct/konteks aktif dan preset penyelesaian teks diterapkan, termasuk Ban EOS Token, panjang minimum, dan DRY. Coba ini jika model lokal terus berhenti di tengah kalimat. Dengan penyelesaian chat, pengaturan penyelesaian chat SillyTavern saat ini digunakan. API, model, suhu, dan pengaturan keluaran terstruktur profil ini diabaikan; pengaturan \"Token Respons Maksimum\" STMB tetap berlaku.",
   "STMemoryBooks_TemperatureRange": "Suhu (0.0 - 2.0):",
   "STMemoryBooks_TemperaturePlaceholder": "JANGAN BIARKAN KOSONG! Jika tidak yakin, isi 0.8.",
   "STMemoryBooks_APIEndpointURL": "URL Titik Akhir API:",

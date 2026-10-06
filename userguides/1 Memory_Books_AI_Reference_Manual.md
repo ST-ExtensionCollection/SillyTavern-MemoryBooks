@@ -199,6 +199,8 @@ Typical KoboldCpp setup:
 - Chat Completion preset imported;
 - response length at least 2048 tokens, with 4096 often safer.
 
+If a local model stops mid-sentence on this route, or the backend is only set up for Text Completion, enable **Generate through SillyTavern's active API** in the STMB profile instead. See [Generating through SillyTavern's active API](#77-generating-through-sillytaverns-active-api).
+
 Typical llama.cpp setup:
 
 - API type: Chat Completion;
@@ -387,6 +389,7 @@ A profile may include:
 - Summary Prompt preset;
 - optional separate multi-character prompts;
 - structured-output behavior;
+- optional generation through SillyTavern's active API;
 - optional SillyTavern ChatCompletionService routing;
 - optional Chat Completion preset;
 - reverse-proxy behavior;
@@ -417,13 +420,24 @@ The named connection supplies its saved URL and secret. The model field in the S
 
 When no SillyTavern connection profile is selected, the existing ChatCompletionService behavior applies, including STMB’s optional Chat Completion preset. OpenRouter requests on this route inherit SillyTavern’s provider order, quantization filters, fallback controls, and middle-out routing setting. These controls remain in force if ChatCompletionService fails and STMB retries through its fallback request path. If that retry also fails, STMB reports both failures. Unchecking the option keeps STMB’s direct request behavior. Full Manual profiles do not use either service route.
 
-### 7.7 Reverse proxy and Full Manual Configuration
+### 7.7 Generating through SillyTavern's active API
+
+**Generate through SillyTavern's active API (generateRaw)** sends memory generation through whatever API is currently selected in SillyTavern, using SillyTavern's own `generateRaw` pipeline instead of the profile's connection.
+
+- With a Text Completion API (KoboldCpp, llama.cpp, TextGen, TabbyAPI, and similar), the active instruct and context templates and the Text Completion preset apply, including **Ban EOS Token**, minimum length, and DRY. Use this when a local model keeps stopping mid-sentence on the Chat Completion route, or when the backend is only set up for Text Completion.
+- With Chat Completion selected in SillyTavern, the request uses SillyTavern's current Chat Completion settings.
+- The profile's API, model, temperature, structured-output, and ChatCompletionService settings are ignored. **Max Response Tokens** in STMB's settings still applies.
+- No JSON schema is sent. The Memory prompt must still ask for the JSON format, and STMB extracts the JSON from the reply, including after a reasoning preamble.
+- This applies to scene Memory generation only. Side Prompts, consolidation, and Topical Clips keep using the profile's connection.
+- Stopping STMB (`/stmb-stop`) cancels the request on Text Completion and Chat Completion. With KoboldAI Classic, AI Horde, or NovelAI selected, the request goes through SillyTavern's `generateRaw`, which STMB cannot cancel: STMB stops waiting immediately, the backend may finish generating, and the result is discarded. SillyTavern's own stop button still cancels it.
+
+### 7.8 Reverse proxy and Full Manual Configuration
 
 **Use reverse proxy** forwards SillyTavern’s configured reverse-proxy details for supported providers.
 
 **Full Manual Configuration** stores a separate endpoint and key inside the STMB profile. It is an exceptional path. Prefer a provider or Custom connection configured and tested in SillyTavern whenever possible.
 
-### 7.8 Output length
+### 7.9 Output length
 
 The global STMB maximum response-token setting can override normal Chat Completion output length for Memory Books work. Cut-off JSON is a common reason for failed generation. Increase output length before weakening the schema or prompt.
 

@@ -13,6 +13,10 @@ import dirtyJson from 'dirty-json';
 import { applyGroupMemoryPolicy, getGroupMemoryProfile } from './groupChatPolicy.js';
 import { getSceneMarkers } from './sceneManager.js';
 import { stripReasoningNoise, recoverMemoryFields, memoryKeywordsRequired } from './aiResponseCleanup.js';
+import { sendActiveApiRequest } from './activeApiRequest.js';
+import * as stScript from '../../../../script.js';
+import * as stTextgen from '../../../textgen-settings.js';
+import * as stOpenAI from '../../../openai.js';
 import {
     CONTEXT_NONE_KEY,
     getContextSetting,
@@ -1193,6 +1197,114 @@ export function assertProviderDidNotTruncate(providerResponse, rawText) {
 }
 
 /**
+ * SillyTavern helpers for sendActiveApiRequest. Read through namespace imports
+ * so a helper missing from an older SillyTavern build is undefined (and the
+ * request falls back to generateRaw) instead of failing to load STMB.
+ */
+function getActiveApiRequestDeps() {
+    const ctx = getContext();
+    return {
+        mainApi: ctx?.mainApi ?? stScript.main_api,
+        amountGen: stScript.amount_gen,
+        createRawPrompt: stScript.createRawPrompt,
+        getGenerateUrl: stScript.getGenerateUrl,
+        getRequestHeaders: stScript.getRequestHeaders,
+        cleanUpMessage: stScript.cleanUpMessage,
+        extractMessageFromData: ctx?.extractMessageFromData ?? stScript.extractMessageFromData,
+        eventSource: stScript.eventSource,
+        eventTypes: stScript.event_types,
+        getTextGenGenerationData: stTextgen.getTextGenGenerationData,
+        sendOpenAIRequest: stOpenAI.sendOpenAIRequest,
+        generateRaw: ctx?.generateRaw,
+        fetch: (...args) => fetch(...args),
+    };
+}
+
+/**
+ * Generates memory through SillyTavern's active API instead of the profile's
+ * own connection (see activeApiRequest.js).
+ *
+ * On a Text Completion API the request goes through ST's instruct/context
+ * templates and Text Completion preset (Ban EOS Token, minimum length, DRY),
+ * which keeps local backends from stopping mid-sentence. On Chat Completion it
+ * uses ST's current Chat Completion settings. The profile's API, model,
+ * temperature, and structured-output settings do not apply. Stopping STMB
+ * cancels the request on Text Completion and Chat Completion; other APIs go
+ * through generateRaw, where STMB can only stop waiting.
+ *
+ * @private
+ * @param {string} promptString - The full prompt for the AI
+ * @param {Object} profile - The user-selected profile
+ * @param {{signal?: AbortSignal|null}} [options]
+ * @returns {Promise<{content: string, title: string, keywords: string[], profile: Object}>}
+ * @throws {AIResponseError} If generation fails or doesn't return valid JSON
+ */
+async function generateMemoryViaActiveApi(promptString, profile, options = {}) {
+    const signal = options?.signal || null;
+
+    const characterDataReady = await waitForCharacterData({ signal });
+    if (!characterDataReady) {
+        if (signal?.aborted) {
+            throw new StmbCancelledError();
+        }
+        throw new AIResponseError(
+            'Character data is not available. This may indicate that SillyTavern is still loading. Please wait a moment and try again.'
+        );
+    }
+
+    // Same max-token rule as the normal path: the STMB setting wins when set,
+    // otherwise null lets the active SillyTavern preset decide.
+    const stmbMaxTokens = Number.parseInt(
+        extension_settings?.STMemoryBooks?.moduleSettings?.maxTokens,
+        10,
+    );
+    const responseLength = Number.isFinite(stmbMaxTokens) && stmbMaxTokens > 0
+        ? stmbMaxTokens
+        : null;
+
+    let aiResponseText;
+    try {
+        // No JSON schema: with one, ST runs its own schema extraction, which
+        // returns "{}" when a reasoning preamble or ```json fence precedes the
+        // object. The prompt already asks for JSON; parseAIJsonResponse extracts it.
+        aiResponseText = String(await sendActiveApiRequest({
+            prompt: promptString,
+            responseLength,
+            signal,
+            deps: getActiveApiRequestDeps(),
+        }) ?? '');
+    } catch (error) {
+        if (signal?.aborted || isStmbStopError(error)) {
+            throw new StmbCancelledError();
+        }
+        throw new AIResponseError(`Generation through SillyTavern's active API failed: ${error?.message || error}`);
+    }
+
+    if (!aiResponseText.trim()) {
+        throw new AIResponseError('SillyTavern\'s active API returned an empty response.');
+    }
+
+    let jsonResult;
+    try {
+        jsonResult = parseAIJsonResponse(aiResponseText, {
+            requireKeywords: memoryKeywordsRequired(profile?.constVectMode, extension_settings),
+        });
+    } catch (error) {
+        if (error instanceof AIResponseError && !String(error.rawResponse || '').trim()) {
+            error.rawResponse = aiResponseText;
+        }
+        throw error;
+    }
+
+    return {
+        content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
+        title: jsonResult.title || 'Memory',
+        keywords: Array.isArray(jsonResult.keywords) ? jsonResult.keywords : [],
+        profile: profile,
+    };
+}
+
+/**
  * Generates memory using AI with structured JSON output instead of tool calling.
  * @private
  * @param {string} promptString - The full prompt for the AI
@@ -1201,6 +1313,10 @@ export function assertProviderDidNotTruncate(providerResponse, rawText) {
  * @throws {AIResponseError} If the AI generation fails or doesn't return valid JSON
  */
 async function generateMemoryWithAI(promptString, profile, options = {}) {
+    if (profile?.generateViaActiveApi === true) {
+        return await generateMemoryViaActiveApi(promptString, profile, options);
+    }
+
     const signal = options?.signal || null;
     const characterDataReady = await waitForCharacterData({ signal });
     if (!characterDataReady) {
