@@ -39,6 +39,12 @@ const jobStores = new Map();
 const jobExecutors = new Map();
 const writeLanes = new Map();
 const pendingApprovals = new Map();
+// Raw AI responses of failed jobs, by job id, for each failed row's Fix JSON.
+// Memory only: never saved with the job, so they are gone after a reload.
+// Capped so responses of jobs that can no longer be reached do not pile up.
+const failedJobResponses = new Map();
+const MAX_FAILED_JOB_RESPONSES = 10;
+let fixJsonHandler = null;
 const jobListeners = new Set();
 
 let jobsUiInitialized = false;
@@ -336,6 +342,9 @@ function finishJob(store, job, state, patch = {}) {
     store.runningJobs = getRunningJobs(store).filter(item => item.id !== job.id);
     store.recentHistory.unshift(job);
     if (store.recentHistory.length > RECENT_LIMIT) {
+        for (const dropped of store.recentHistory.slice(RECENT_LIMIT)) {
+            failedJobResponses.delete(dropped.id);
+        }
         store.recentHistory.length = RECENT_LIMIT;
     }
     touchStore(store);
@@ -422,6 +431,21 @@ async function executeRunningJob(chatKey, store, job, executor) {
     } catch (error) {
         const isAbort = String(error?.name || '') === 'AbortError' || String(error?.message || '').includes('Cancelled');
         const needsReview = String(error?.name || '') === 'StmbJobNeedsReview';
+        // A character memory's response is not a fix for the job's group memory
+        // Only memory rows offer Fix JSON, so only memory jobs keep a response
+        if (!isAbort && !needsReview && String(job.type || '') === 'memory' && !error?.stmbCharacterMemory
+            && typeof error?.rawResponse === 'string' && error.rawResponse) {
+            failedJobResponses.set(job.id, {
+                rawResponse: error.rawResponse,
+                code: error.code || '',
+                message: String(error.message || ''),
+                recoverable: error.recoverable,
+            });
+            for (const oldestId of failedJobResponses.keys()) {
+                if (failedJobResponses.size <= MAX_FAILED_JOB_RESPONSES) break;
+                failedJobResponses.delete(oldestId);
+            }
+        }
         finishJob(store, job, isAbort ? 'canceled' : needsReview ? 'blocked' : 'failed', {
             error: isAbort ? null : { message: String(error?.message || error) },
             detail: isAbort ? 'Canceled' : needsReview ? 'Needs review' : job.detail,
@@ -505,6 +529,16 @@ export function enqueueStmbJob(input = {}) {
     touchStore(store);
     runNextJob(job.chatKey).catch(error => console.warn(`${MODULE_NAME}: queue kickoff failed`, error));
     return cloneJobForView(job);
+}
+
+/**
+ * Register the handler for a failed memory job's "Fix JSON" button. It gets
+ * the job (view fields plus profileSettings), its failure ({rawResponse, code,
+ * message, recoverable}) and
+ * retry(payloadPatch), which re-queues the job with its follow-up jobs.
+ */
+export function registerStmbJobFixJsonHandler(handler) {
+    fixJsonHandler = typeof handler === 'function' ? handler : null;
 }
 
 export function registerStmbJobExecutor(type, executor) {
@@ -818,7 +852,8 @@ function renderStmbJobsUi() {
             ? `<button type="button" class="menu_button stmb-jobs-row-action" data-action="cancel-job" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_Cancel', 'Cancel'))}</button>`
             : canRetry
                 ? String(job.type || '') === 'memory'
-                    ? `<button type="button" class="menu_button stmb-jobs-row-action" data-action="retry-all" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_RetryAll', 'Retry All'))}</button>
+                    ? `${fixJsonHandler && failedJobResponses.has(job.id) ? `<button type="button" class="menu_button stmb-jobs-row-action" data-action="fix-json" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_FixJson', 'Fix JSON'))}</button>` : ''}
+                       <button type="button" class="menu_button stmb-jobs-row-action" data-action="retry-all" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_RetryAll', 'Retry All'))}</button>
                        <button type="button" class="menu_button stmb-jobs-row-action" data-action="retry-memory" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_RetryMemory', 'Retry Memory'))}</button>`
                     : `<button type="button" class="menu_button stmb-jobs-row-action" data-action="retry-job" data-job-id="${escapeHtml(job.id)}">${escapeHtml(tr('STMemoryBooks_Jobs_Retry', 'Retry'))}</button>`
                 : '';
@@ -879,6 +914,32 @@ function findMutableJob(jobId) {
     return null;
 }
 
+// Re-queue a finished job. payloadPatch overrides payload fields; a field set
+// to undefined is removed. A plain retry never reuses a corrected response.
+function retryJobRecord(record, action, payloadPatch = null) {
+    const retryPlan = action === 'retry-memory'
+        ? buildMemoryOnlyRetryPlan(record.job)
+        : buildJobRetryPlan(record.job, record.store.recentHistory);
+    const retryInput = retryPlan.retryInput;
+    retryInput.payload = { ...(retryInput.payload || {}) };
+    delete retryInput.payload.correctedRawResponse;
+    // A retry is started by hand, so it is interactive even for a catch-up job
+    delete retryInput.payload.nonInteractive;
+    for (const [key, value] of Object.entries(payloadPatch || {})) {
+        if (value === undefined) delete retryInput.payload[key];
+        else retryInput.payload[key] = value;
+    }
+    const consumedIds = new Set(retryPlan.consumedJobIds);
+    for (const id of consumedIds) failedJobResponses.delete(id);
+    record.store.recentHistory = record.store.recentHistory.filter(job => !consumedIds.has(job.id));
+    enqueueStmbJob({
+        ...retryInput,
+        state: 'queued',
+        detail: record.job.detail,
+    });
+    touchStore(record.store);
+}
+
 function handlePanelClick(event) {
     const target = event.target.closest?.('[data-action]');
     if (!target) return;
@@ -886,6 +947,9 @@ function handlePanelClick(event) {
     if (action === 'dismiss-terminal') {
         const store = jobStores.get(getStmbChatKey());
         if (store) {
+            for (const job of store.recentHistory) {
+                if (TERMINAL_STATES.has(String(job.state || ''))) failedJobResponses.delete(job.id);
+            }
             store.recentHistory = store.recentHistory.filter(job => !TERMINAL_STATES.has(String(job.state || '')));
             touchStore(store);
         }
@@ -908,18 +972,34 @@ function handlePanelClick(event) {
         return;
     }
     if (action === 'retry-job' || action === 'retry-all' || action === 'retry-memory') {
-        const retryPlan = action === 'retry-memory'
-            ? buildMemoryOnlyRetryPlan(record.job)
-            : buildJobRetryPlan(record.job, record.store.recentHistory);
-        const consumedIds = new Set(retryPlan.consumedJobIds);
-        record.store.recentHistory = record.store.recentHistory.filter(job => !consumedIds.has(job.id));
-        enqueueStmbJob({
-            ...retryPlan.retryInput,
-            state: 'queued',
-            detail: record.job.detail,
-        });
-        touchStore(record.store);
+        retryJobRecord(record, action);
         return;
+    }
+    if (action === 'fix-json') {
+        const failure = failedJobResponses.get(record.job.id);
+        if (!fixJsonHandler) return;
+        if (!failure) {
+            // Dropped since the row was drawn (limit reached); redraw without the button
+            toastr.warning(
+                tr('STMemoryBooks_Jobs_FixJsonUnavailable', "This job's AI response is no longer available. Use Retry instead."),
+                'STMemoryBooks',
+            );
+            touchStore(record.store);
+            return;
+        }
+        const jobView = {
+            ...cloneJobForView(record.job),
+            // The fix window parses the corrected response with the job's profile
+            profileSettings: safeClone(record.job.payload?.profileSettings || null),
+        };
+        fixJsonHandler(jobView, { ...failure }, {
+            retry: (payloadPatch = null) => {
+                const current = findMutableJob(jobId);
+                if (!current || !TERMINAL_STATES.has(String(current.job.state || ''))) return false;
+                retryJobRecord(current, 'retry-all', payloadPatch);
+                return true;
+            },
+        });
     }
     if (action === 'open-approval') {
         const approval = pendingApprovals.get(record.job.id);

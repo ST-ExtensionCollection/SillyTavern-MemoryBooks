@@ -257,6 +257,7 @@ import {
   hasActiveStmbJobs,
   initStmbJobsIfTopInfoBarEnabled,
   registerStmbJobExecutor,
+  registerStmbJobFixJsonHandler,
   loadLatestLorebookForJob,
   subscribeToStmbJobs,
   updateHighestMemoryProcessedForChatRef,
@@ -599,6 +600,7 @@ const defaultSettings = {
     alwaysUseDefault: true,
     showMemoryPreviews: false,
     previewRecoveredMemories: DEFAULT_RECOVERED_MEMORY_PREVIEW_MODE,
+    openFixWindowOnFailure: false,
     jsonLineBreakMode: DEFAULT_JSON_LINE_BREAK_MODE,
     showConsolidationPreviews: false,
     showNotifications: true,
@@ -4166,10 +4168,18 @@ async function generateCharacterFocusedManualGroupMemories({
       narratorParticipantIds: applyNativeCharacterFilters ? undefined : [speakerName],
     };
 
-    const characterMemory = await createMemory(characterScene, profileSettings, {
-      tokenWarningThreshold: tokenThreshold,
-      signal,
-    });
+    let characterMemory;
+    try {
+      characterMemory = await createMemory(characterScene, profileSettings, {
+        tokenWarningThreshold: tokenThreshold,
+        signal,
+      });
+    } catch (error) {
+      // This response belongs to one character's memory, so it must not be
+      // offered as a correction for the group memory (fix window, Fix JSON).
+      if (error && typeof error === "object") error.stmbCharacterMemory = characterName;
+      throw error;
+    }
     warnRecoveredMemory(characterMemory);
     if (applyNativeCharacterFilters) {
       ensureGroupMemoryParticipantFilters(characterMemory, { characterFilterNames: [speakerName] });
@@ -6013,6 +6023,10 @@ async function executeMemoryGeneration(
         manualGroupLorebookBindings: deepClone(
           manualGroupLorebookValidation?.manualGroupLorebookBindings,
         ),
+        // Kept so the Retry button reruns the same attempt
+        manualGroupLorebookValidation,
+        memoryOriginSnapshot,
+        characterFilterNames: generationRetryState.characterFilterNames,
         summaryCount,
         tokenThreshold,
         sceneRange:
@@ -6048,6 +6062,16 @@ async function executeMemoryGeneration(
             console.error(e);
           }
         });
+      // Optional: open the fix window right away; closing it leaves the toast as usual.
+      // Catch-up stays non-interactive.
+      if (
+        settings?.moduleSettings?.openFixWindowOnFailure === true &&
+        !stmbCatchupActive &&
+        typeof error.rawResponse === "string" &&
+        error.rawResponse
+      ) {
+        showFailedAIResponsePopup(error);
+      }
     } else if (error.name === "InvalidProfileError") {
       toastr.error(
         __st_t_tag`Profile configuration error: ${error.message}${retryMsg}`,
@@ -6483,6 +6507,7 @@ async function executeQueuedMemoryJob(job, jobContext) {
   const memoryResult = await createMemory(compiledScene, profileSettings, {
     tokenWarningThreshold: payload.tokenThreshold,
     signal: jobContext.signal,
+    correctedRawResponse: payload.correctedRawResponse,
   });
   jobContext.throwIfCancelled();
 
@@ -11129,6 +11154,7 @@ async function buildSettingsTemplateData({ includeSidePromptSets = false } = {})
     previewRecoveredMemoriesOptions: getRecoveredMemoryPreviewModeOptions(
       settings.moduleSettings.previewRecoveredMemories,
     ),
+    openFixWindowOnFailure: settings.moduleSettings.openFixWindowOnFailure === true,
     jsonLineBreakModeOptions: getJsonLineBreakModeOptions(settings.moduleSettings.jsonLineBreakMode),
     showConsolidationPreviews: settings.moduleSettings.showConsolidationPreviews,
     showNotifications: settings.moduleSettings.showNotifications,
@@ -11564,6 +11590,12 @@ function setupSettingsEventListeners(popupInstance = currentPopupInstance) {
       settings.moduleSettings.showFloatingClipButton = e.target.checked;
       saveSettingsDebounced();
       refreshFloatingClipButtonSetting();
+      return;
+    }
+
+    if (e.target.matches("#stmb-open-fix-window-on-failure")) {
+      settings.moduleSettings.openFixWindowOnFailure = e.target.checked;
+      saveSettingsDebounced();
       return;
     }
 
@@ -12145,6 +12177,9 @@ function persistMainPopupSettings(popupElement) {
     popupElement.querySelector("#stmb-memory-boundary-mode")?.value ??
       settings.moduleSettings.memoryBoundaryMode,
   );
+  const openFixWindowOnFailure =
+    popupElement.querySelector("#stmb-open-fix-window-on-failure")?.checked ??
+    settings.moduleSettings.openFixWindowOnFailure === true;
   const previewRecoveredMemories = normalizeRecoveredMemoryPreviewMode(
     popupElement.querySelector("#stmb-preview-recovered-memories")?.value ??
       settings.moduleSettings.previewRecoveredMemories,
@@ -12284,6 +12319,11 @@ function persistMainPopupSettings(popupElement) {
   if (showFloatingClipButton !== (settings.moduleSettings.showFloatingClipButton !== false)) {
     settings.moduleSettings.showFloatingClipButton = showFloatingClipButton;
     refreshFloatingClipButtonSetting();
+    hasChanges = true;
+  }
+
+  if (openFixWindowOnFailure !== (settings.moduleSettings.openFixWindowOnFailure === true)) {
+    settings.moduleSettings.openFixWindowOnFailure = openFixWindowOnFailure;
     hasChanges = true;
   }
 
@@ -13542,8 +13582,12 @@ async function reloadFailureLorebook(lorebookValidation) {
 
 /**
  * Show a popup with details for a failed AI response, including raw response and provider body if available.
+ * @param {string} correctedRaw
+ * @param {Object|null} [popupContext] - Failure context the fix window was
+ *   opened for; a newer failure replaces lastFailedAIContext
+ * @returns {Promise<boolean|undefined>} true once the memory is saved
  */
-async function applyManualFixedJson(correctedRaw) {
+async function applyManualFixedJson(correctedRaw, popupContext = null) {
   const reminderChatKey = getStmbChatKey();
   if (isProcessingMemory) {
     toastr.warning(
@@ -13568,7 +13612,8 @@ async function applyManualFixedJson(correctedRaw) {
     if (
       !context?.compiledScene ||
       !context?.profileSettings ||
-      !context?.lorebookValidation?.valid
+      !context?.lorebookValidation?.valid ||
+      (popupContext && context !== popupContext)
     ) {
       toastr.error(
         translate(
@@ -13825,7 +13870,7 @@ async function applyManualFixedJson(correctedRaw) {
       __st_t_tag`Memory "${addResult.entryTitle}" created successfully${contextMsg}!`,
       "STMemoryBooks",
     );
-  
+    return true;
   } catch (error) {
     if (isStmbStopError(error)) {
       return;
@@ -14324,7 +14369,174 @@ function showFailedSummaryResponsePopup(error) {
 /**
  * Show a popup with details for a failed AI response, including raw response and provider body if available.
  */
-function showFailedAIResponsePopup(error) {
+/**
+ * Warning shown next to Retry for failures flagged non-recoverable, worded by
+ * whether the response was cut off at Max Response Length.
+ */
+function getFailedGenerationRetryWarning(error) {
+  if (error?.recoverable !== false) return "";
+  const code = String(error?.code || "");
+  if (code === "PROVIDER_TRUNCATION" || code === "PROVIDER_TRUNCATION_FLAG") {
+    return translate(
+      "The provider cut this response off at Max Response Length. Raise it before retrying, or the retry will be cut off too.",
+      "STMemoryBooks_ReviewFailedAI_RetryWarnProviderTruncation",
+    );
+  }
+  if (code === "UNBALANCED" || code === "INCOMPLETE_SENTENCE") {
+    return translate(
+      "This response looks cut off. If the model reached Max Response Length, raise it before retrying.",
+      "STMemoryBooks_ReviewFailedAI_RetryWarnTruncated",
+    );
+  }
+  return translate(
+    "The model did not return valid memory JSON. Retrying may help, or fix the JSON above.",
+    "STMemoryBooks_ReviewFailedAI_RetryWarnInvalid",
+  );
+}
+
+/**
+ * Rerun a failed memory generation with its original scene, profile, lorebook
+ * and chat, from the failed-response popup. popupContext is the failure the
+ * popup was opened for; a newer failure or a success replaces it.
+ */
+async function retryFailedMemoryGeneration(failedPopup = null, popupContext = lastFailedAIContext) {
+  const context = lastFailedAIContext;
+  if (
+    !context?.sceneData ||
+    !context?.lorebookValidation?.valid ||
+    !context?.profileSettings ||
+    context !== popupContext
+  ) {
+    toastr.error(
+      translate(
+        "Missing failure context; cannot retry.",
+        "STMemoryBooks_ReviewFailedAI_RetryNoContext",
+      ),
+      "STMemoryBooks",
+    );
+    return false;
+  }
+  if (isProcessingMemory) {
+    toastr.warning(
+      translate(
+        "Memory generation is already in progress.",
+        "STMemoryBooks_ManualFix_InProgress",
+      ),
+      "STMemoryBooks",
+    );
+    return false;
+  }
+  if (context.chatKey && getStmbChatKey() !== context.chatKey) {
+    toastr.error(
+      translate(
+        "The chat changed; retry from the original chat.",
+        "STMemoryBooks_ReviewFailedAI_RetryChatChanged",
+      ),
+      "STMemoryBooks",
+    );
+    return false;
+  }
+  if (guardPendingProgress()) return false;
+
+  failedPopup?.completeCancelled();
+  try {
+    if (lastFailureToast) toastr.clear(lastFailureToast);
+  } catch (e) {
+    /* noop */
+  }
+  lastFailureToast = null;
+
+  const reminderChatKey = getStmbChatKey();
+  isProcessingMemory = true;
+  try {
+    const lorebookValidation = await reloadFailureLorebook(context.lorebookValidation);
+    return await executeMemoryGeneration(
+      context.sceneData,
+      lorebookValidation,
+      {
+        profileSettings: context.profileSettings,
+        summaryCount: context.summaryCount,
+        tokenThreshold: context.tokenThreshold,
+        settings: context.settings,
+      },
+      0,
+      null,
+      context.manualGroupLorebookValidation || null,
+      {
+        memoryOriginSnapshot: context.memoryOriginSnapshot,
+        characterFilterNames: context.characterFilterNames,
+      },
+    );
+  } catch (error) {
+    console.error("STMemoryBooks: Retry after failed generation errored:", error);
+    toastr.error(
+      __st_t_tag`An unexpected error occurred: ${error.message}`,
+      "STMemoryBooks",
+    );
+    return false;
+  } finally {
+    isProcessingMemory = false;
+    if (getStmbChatKey() === reminderChatKey) getMemoryReminderController().check({ notify: true });
+  }
+}
+
+/**
+ * "Fix JSON" on a failed queued memory job: the same fix window, but a
+ * corrected response or a retry goes back through the queue, which saves it
+ * like any memory (preview, side prompts).
+ */
+function openFailedMemoryJobFixWindow(job, failure, { retry }) {
+  const profile = job?.profileSettings;
+  const requeue = (payloadPatch = null) => {
+    if (retry(payloadPatch)) return true;
+    toastr.warning(
+      translate(
+        "This job was already retried or dismissed.",
+        "STMemoryBooks_Jobs_FixJsonGone",
+      ),
+      "STMemoryBooks",
+    );
+    return false;
+  };
+  showFailedAIResponsePopup(failure, {
+    onCreate: (correctedRaw) => {
+      let jsonResult;
+      try {
+        jsonResult = parseAIJsonResponse(String(correctedRaw || "").trim(), { profile });
+      } catch (error) {
+        const code = error?.code ? ` [${error.code}]` : "";
+        toastr.error(
+          __st_t_tag`Corrected JSON is still invalid${code}: ${error?.message || "Failed to parse corrected JSON."}`,
+          "STMemoryBooks",
+        );
+        return false;
+      }
+      if (
+        usableKeywords(jsonResult.keywords).length === 0 &&
+        memoryKeywordsRequired(profile?.constVectMode, extension_settings)
+      ) {
+        toastr.error(
+          translate(
+            "Corrected JSON is missing keywords array.",
+            "STMemoryBooks_ManualFix_MissingKeywords",
+          ),
+          "STMemoryBooks",
+        );
+        return false;
+      }
+      return requeue({ correctedRawResponse: String(correctedRaw) });
+    },
+    onRetry: () => requeue(),
+  });
+}
+
+/**
+ * @param {Object} error - AIResponseError, or a failed job's saved failure
+ * @param {{onCreate: (raw: string) => boolean, onRetry: () => boolean}|null} [jobActions]
+ *   Queued-job handlers; each returns true when it handled the action, which
+ *   closes the window
+ */
+function showFailedAIResponsePopup(error, jobActions = null) {
   try {
     const esc = (s) => escapeHtml(String(s || ""));
     const code = error?.code ? esc(error.code) : "";
@@ -14336,10 +14548,16 @@ function showFailedAIResponsePopup(error) {
       typeof error?.chatCompletionServiceError === "string"
         ? error.chatCompletionServiceError
         : "";
-    const canManualFix =
-      !!raw &&
-      !!lastFailedAIContext?.compiledScene &&
-      !!lastFailedAIContext?.lorebookValidation?.valid;
+    const characterMemoryName =
+      typeof error?.stmbCharacterMemory === "string" ? error.stmbCharacterMemory : "";
+    const canRetry = jobActions
+      ? !!raw
+      : !!raw &&
+        !!lastFailedAIContext?.compiledScene &&
+        !!lastFailedAIContext?.lorebookValidation?.valid;
+    // A character memory's response cannot be saved as the group memory
+    const canManualFix = canRetry && !characterMemoryName;
+    const popupContext = lastFailedAIContext;
     let content = "";
     content += `<h3>${esc(translate("Review Failed AI Response", "STMemoryBooks_ReviewFailedAI_Title"))}</h3>`;
     content += `<div class="world_entry_form_control">`;
@@ -14362,8 +14580,15 @@ function showFailedAIResponsePopup(error) {
       content += `<div class="buttons_block gap10px">`;
       content += `<button id="stmb-copy-raw" class="menu_button">${esc(translate("Copy Raw", "STMemoryBooks_ReviewFailedAI_CopyRaw"))}</button>`;
       content += `<button id="stmb-apply-corrected-raw" class="menu_button" ${canManualFix ? "" : "disabled"}>${esc(translate("Create Memory from corrected JSON", "STMemoryBooks_ReviewFailedAI_CreateMemory"))}</button>`;
+      content += `<button id="stmb-retry-failed-generation" class="menu_button" ${canRetry ? "" : "disabled"}>${esc(translate("Retry Generation", "STMemoryBooks_RetryGeneration"))}</button>`;
       content += `</div>`;
-      if (!canManualFix) {
+      const retryWarning = getFailedGenerationRetryWarning(error);
+      if (retryWarning) {
+        content += `<small class="warning">${esc(retryWarning)}</small>`;
+      }
+      if (characterMemoryName) {
+        content += `<div class="opacity70p">${esc(tr("STMemoryBooks_ReviewFailedAI_CharacterMemory", "This response is from {{name}}'s character memory, so it cannot be saved as the group memory. Use Retry Generation instead.", { name: characterMemoryName }))}</div>`;
+      } else if (!canManualFix) {
         content += `<div class="opacity70p">${esc(translate("Unable to apply corrected JSON because the original generation context is missing.", "STMemoryBooks_ReviewFailedAI_NoContext"))}</div>`;
       }
       content += `</div>`;
@@ -14408,7 +14633,23 @@ function showFailedAIResponsePopup(error) {
       ?.addEventListener("click", async () => {
         const correctedRaw =
           dlg.querySelector("#stmb-corrected-raw")?.value ?? raw;
-        void applyManualFixedJson(correctedRaw);
+        if (jobActions) {
+          if (jobActions.onCreate(correctedRaw)) popup.completeCancelled();
+          return;
+        }
+        // Close only once the memory is saved, so a refused fix keeps the edits
+        if (await applyManualFixedJson(correctedRaw, popupContext) === true) {
+          popup.completeCancelled();
+        }
+      });
+    dlg
+      .querySelector("#stmb-retry-failed-generation")
+      ?.addEventListener("click", () => {
+        if (jobActions) {
+          if (jobActions.onRetry()) popup.completeCancelled();
+          return;
+        }
+        void retryFailedMemoryGeneration(popup, popupContext);
       });
     dlg
       .querySelector("#stmb-copy-provider")
@@ -14568,6 +14809,7 @@ async function init() {
   registerMemoryTierMacros();
   await refreshMemoryTierMacroCache();
   registerStmbJobExecutor("memory", executeQueuedMemoryJob);
+  registerStmbJobFixJsonHandler(openFailedMemoryJobFixWindow);
   registerStmbJobExecutor("memoryAssistance", executeQueuedMemoryAssistanceJob);
   registerStmbJobExecutor("consolidation", executeQueuedConsolidationJob);
   registerStmbJobExecutor("regeneration", executeQueuedLorebookRegenerationJob);

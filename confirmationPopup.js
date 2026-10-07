@@ -12,6 +12,7 @@ import { tr } from './i18nHelpers.js';
 import { createProfileObject, getUIModelSettings, getCurrentApiInfo, getEffectivePrompt, generateSafeProfileName, getEffectiveLorebookName, markStmbPopup } from './utils.js';
 import { playMessageSound } from '../../../power-user.js';
 import { generateMemoryFromRaw } from './stmemory.js';
+import { usableKeywords } from './aiResponseCleanup.js';
 
 const MODULE_NAME = 'STMemoryBooks-ConfirmationPopup';
 
@@ -855,10 +856,15 @@ function createRawResponseEditor(previewDlg, memoryResult, profileSettings, opti
       if (contentElement) contentElement.value = parsed.content;
       // Keep keywords typed into the preview when the response has none
       const keywordsElement = previewDlg.querySelector('#stmb-preview-keywords');
-      if (keywordsElement && parsed.keywords.length > 0) {
+      if (keywordsElement && usableKeywords(parsed.keywords).length > 0) {
         keywordsElement.value = previewKeywordsToString(parsed.keywords);
       }
       memoryResult.stmbRawResponse = editedRaw;
+      // The applied response replaces the AI's: keep its parse level, and drop
+      // the recovered notice once it parsed cleanly
+      if (memoryResult.metadata) memoryResult.metadata.parseLevel = parsed.parseLevel;
+      const noticeElement = previewDlg.querySelector('#stmb-preview-recovered-notice');
+      if (noticeElement) noticeElement.style.display = parsed.parseLevel === 'strict' ? 'none' : '';
       return true;
     },
   });

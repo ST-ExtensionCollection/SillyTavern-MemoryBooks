@@ -266,6 +266,10 @@ export const generalSettingsTemplate = Handlebars.compile(`
             </select>
         </label>
         <label class="checkbox_label">
+            <input type="checkbox" id="stmb-open-fix-window-on-failure" {{#if openFixWindowOnFailure}}checked{{/if}}>
+            <span data-i18n="STMemoryBooks_OpenFixWindowOnFailure;[title]STMemoryBooks_OpenFixWindowOnFailureTooltip" title="When a memory's AI response cannot be parsed, open the Review Failed AI Response window right away instead of waiting for you to click the error notification. Closing it keeps the notification as usual. Not used with the job queue: failed memory jobs offer Fix JSON on their row instead.">Open the fix window when a memory fails</span>
+        </label>
+        <label class="checkbox_label">
             <input type="checkbox" id="stmb-show-consolidation-previews" {{#if showConsolidationPreviews}}checked{{/if}}>
             <span data-i18n="STMemoryBooks_ShowConsolidationPreviews;[title]STMemoryBooks_ShowConsolidationPreviewsTooltip" title="Shows previews for consolidation summaries returned from the AI.">Show consolidation previews</span>
         </label>
@@ -680,7 +684,7 @@ export const memoryPreviewTemplate = Handlebars.compile(`
         <small class="marginBot10" data-i18n="STMemoryBooks_MemoryPreviewDesc">Review the generated memory below. You can edit the content while preserving the structure.</small>
     </div>
     {{#if recoveredNotice}}
-    <div class="info-block warning marginBot10" data-i18n="STMemoryBooks_MemoryPreviewRecoveredNotice">The AI's JSON was malformed, so this memory was recovered from it. Check the title, content, and keywords before saving.</div>
+    <div id="stmb-preview-recovered-notice" class="info-block warning marginBot10" data-i18n="STMemoryBooks_MemoryPreviewRecoveredNotice">The AI's JSON was malformed, so this memory was recovered from it. Check the title, content, and keywords before saving.</div>
     {{/if}}
     {{#if hasRawResponse}}
     <div class="marginBot10"><a href="#" id="stmb-preview-raw-link" data-i18n="STMemoryBooks_MemoryPreviewRawLink">View or fix the original response</a></div>

@@ -492,6 +492,8 @@ Check names, attribution, facts, omitted consequences, and unrelated commentary.
 
 When no preview opens (the option is off, or during `/stmb-catchup`), a recovered Memory is still saved and a warning names it so you can check it in the lorebook.
 
+When a Memory fails completely, STMB shows an error notification with a **Raw response from AI** link that opens the **Review Failed AI Response** window. **Open the fix window when a memory fails** (off by default) opens that window right away instead. Closing it without saving changes nothing: the notification and its link stay. In the window you can edit the raw response and **Create Memory from corrected JSON**, or click **Retry Generation** to run the same scene again with the same profile and lorebook. Retry is refused if you switched chats. STMB's automatic retries (for recoverable errors such as a response without JSON) run first, so the window only appears once they are used up. When a failure is flagged as non-recoverable, a warning next to Retry says whether the response was cut off at Max Response Length (raise it first) or was not valid JSON. `/stmb-catchup` never opens the window. With the job queue, failed Memory jobs never open it by themselves; use **Fix JSON** on the job row instead (see [Job Queue and Retry Controls](#25-job-queue-and-retry-controls)).
+
 ### 8.5 Automatic Memories
 
 Enable **Auto-create memory summaries** and configure:
@@ -1997,6 +1999,7 @@ Retry scopes:
 - **Retry:** rerun one non-Memory job, such as a Side Prompt or consolidation job.
 - **Retry All:** rerun/resume the Memory and associated after-Memory Side Prompt work. If the Memory was already saved, STMB can resume from that result rather than duplicate it.
 - **Retry Memory:** rerun/resume only the Memory and intentionally skip after-Memory Side Prompts.
+- **Fix JSON:** shown on a failed Memory job whose AI response was captured (until SillyTavern is reloaded; up to the 10 most recent failures). It is not offered when a character-focused group Memory failed, since that response is not the group Memory; use Retry instead. It opens the Review Failed AI Response window. **Create Memory from corrected JSON** queues the job again with your corrected response instead of a new generation, and **Retry Generation** queues a fresh generation; both continue like **Retry All**, including preview and after-Memory Side Prompts. A plain Retry never reuses a corrected response.
 
 Use Retry All to restore the combined workflow; use Retry Memory when tracker work should not run.
 
@@ -2080,6 +2083,7 @@ Open **Settings → General Settings** in the main panel.
 | **Automatically accept detected participants in future** | Global | Stops asking for real-group participant confirmation and accepts STMB's detected participant set for later Memories. |
 | **Show memory previews** | Global | Opens an editable review before saving generated Memories and applicable Side Prompt output. |
 | **Line breaks in AI JSON** | Global | How raw line breaks in the AI's Memory JSON are handled: keep them inside strings (detect, default), replace them with spaces, or remove them (legacy). |
+| **Open the fix window when a memory fails** | Global | Opens the Review Failed AI Response window as soon as a Memory fails to parse, with Retry Generation and manual JSON correction. Off by default; never during `/stmb-catchup`. Not used with the job queue, where failed Memory jobs offer **Fix JSON** instead. |
 | **Preview recovered memories** | Global | Opens the Memory preview, even with previews off, when the AI's JSON had to be recovered (default) or also repaired. `/stmb-catchup` shows a warning instead. |
 | **Show consolidation previews** | Global | Opens review controls for generated consolidation candidates before they are committed. |
 | **Show notifications** | Global | Enables STMB toast notifications. |
@@ -2403,7 +2407,7 @@ Check in this order:
 6. provider supports the selected structured-output mode;
 7. try Skip Structured Output only if the provider rejects schemas;
 8. try a more instruction-following model before rewriting the prompt;
-9. click **Raw response from AI** in the persistent error notification to inspect the response as the AI returned it (before incoming regex scripts and cleanup, which run again when the correction is parsed) and use the manual JSON correction interface when available. The corrected JSON is saved directly, so when the profile's activation mode needs keywords (see [Activation modes](#102-activation-modes)), a correction without keywords is refused and the editor stays open.
+9. click **Raw response from AI** in the persistent error notification to inspect the response as the AI returned it (before incoming regex scripts and cleanup, which run again when the correction is parsed) and use the manual JSON correction interface when available. The corrected JSON is saved directly, so when the profile's activation mode needs keywords (see [Activation modes](#102-activation-modes)), a correction without keywords is refused and the editor stays open. **Retry Generation** in the same window reruns the scene; read the warning next to it first, since a cut-off response needs a higher Max Response Length or the retry will be cut off too.
 
 Common causes include code fences, commentary, a missing key, keywords not being an array, refusal text, or cut-off output.
 

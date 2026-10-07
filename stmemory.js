@@ -1181,13 +1181,7 @@ export function parseAIJsonResponse(aiResponse, { profile } = {}) {
 
 // Build a memory object from a corrected raw response using the existing parser
  export function generateMemoryFromRaw(correctedRaw, profile) {
-    const jsonResult = parseAIJsonResponse(correctedRaw, { profile });
-    return {
-        content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
-        title: jsonResult.title || 'Memory',
-        keywords: Array.isArray(jsonResult.keywords) ? jsonResult.keywords : [],
-        profile
-    };
+    return toMemoryResponse(parseAIJsonResponse(correctedRaw, { profile }), profile, correctedRaw);
 }
 
 // Submit corrected raw, return a memory-like object for insertion
@@ -1235,6 +1229,24 @@ export function assertProviderDidNotTruncate(providerResponse, rawText) {
         try { err.providerResponse = providerResponse || null; } catch {}
         throw err;
     }
+}
+
+/**
+ * Shape a parsed AI response the way createMemory consumes it.
+ * @param {Object} jsonResult - parseAIJsonResponse result
+ * @param {Object} profile
+ * @param {string} rawText - The response text that was parsed
+ */
+function toMemoryResponse(jsonResult, profile, rawText) {
+    return {
+        content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
+        title: jsonResult.title || 'Memory',
+        keywords: jsonResult.keywords || [],
+        profile: profile,
+        parseLevel: jsonResult.stmbParseLevel || 'strict',
+        // Kept only for a result that needed repair, so the preview can show it
+        rawResponse: jsonResult.stmbParseLevel ? rawText : null,
+    };
 }
 
 /**
@@ -1329,15 +1341,7 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
             throw error;
         }
 
-        return {
-            content: jsonResult.content || jsonResult.summary || jsonResult.memory_content || '',
-            title: jsonResult.title || 'Memory',
-            keywords: jsonResult.keywords || [],
-            profile: profile,
-            parseLevel: jsonResult.stmbParseLevel || 'strict',
-            // Kept only for a result that needed repair, so the preview can show it
-            rawResponse: jsonResult.stmbParseLevel ? aiResponseText : null,
-        };
+        return toMemoryResponse(jsonResult, profile, aiResponseText);
     } catch (error) {
         if (isStmbStopError(error)) throw error;
         if (error instanceof AIResponseError) throw error;
@@ -1368,6 +1372,7 @@ async function generateMemoryWithAI(promptString, profile, options = {}) {
  * @param {Object} profile - The user-selected memory generation profile from settings
  * @param {Object} options - Additional generation options
  * @param {number} options.tokenWarningThreshold - Token threshold for warnings (default: 30000)
+ * @param {string} [options.correctedRawResponse] - Parse this response instead of calling the AI
  * @returns {Promise<Object>} The generated memory result, ready for lorebook insertion
  * @throws {TokenWarningError} If the estimated token count exceeds the warning threshold
  * @throws {InvalidProfileError} If the provided profile is incomplete
@@ -1380,17 +1385,25 @@ export async function createMemory(compiledScene, profile, options = {}) {
     
     try {
         validateInputs(compiledScene, profile);
-        const promptString = await buildPrompt(compiledScene, profile);
-        const tokenEstimate = await estimateTokenUsage(promptString);        
-        const tokenWarningThreshold = options.tokenWarningThreshold ?? 30000;
-        if (tokenEstimate.total > tokenWarningThreshold) {
-            throw new TokenWarningError(
-                'Token warning threshold exceeded.',
-                tokenEstimate.total
-            );
+        let tokenEstimate;
+        let response;
+        if (typeof options?.correctedRawResponse === 'string') {
+            // A response corrected by the user (queued "Fix JSON") is parsed instead
+            // of asking the AI again, so no prompt is built and the token
+            // threshold, which guards the AI request, does not apply.
+            response = generateMemoryFromRaw(options.correctedRawResponse, profile);
+        } else {
+            const promptString = await buildPrompt(compiledScene, profile);
+            tokenEstimate = await estimateTokenUsage(promptString);
+            const tokenWarningThreshold = options.tokenWarningThreshold ?? 30000;
+            if (tokenEstimate.total > tokenWarningThreshold) {
+                throw new TokenWarningError(
+                    'Token warning threshold exceeded.',
+                    tokenEstimate.total
+                );
+            }
+            response = await generateMemoryWithAI(promptString, profile, { signal: options?.signal || null });
         }
-        
-        const response = await generateMemoryWithAI(promptString, profile, { signal: options?.signal || null });
         const processedMemory = processJsonResult(response, compiledScene);
 
         const memoryResult = {
